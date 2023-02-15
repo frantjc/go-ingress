@@ -2,12 +2,9 @@ package ingress
 
 import "net/http"
 
-const (
-	PathTypePrefix = "Prefix"
-)
-
 type Path interface {
-	Backend() http.Handler
-	Path() string
-	// Type() string only supporting Prefix for now
+	http.Handler
+	// Matches takes a request's path and returns a "weight" representing
+	// how strong of a match this path is to the request. <0 is infinity.
+	Matches(string) int
 }
