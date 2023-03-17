@@ -3,7 +3,7 @@ GOLANGCI-LINT = golangci-lint
 
 .DEFAULT: test
 
-fmt test:
+fmt generate test:
 	@$(GO) $@ ./...
 
 download vendor verify:
