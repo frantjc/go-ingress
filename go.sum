@@ -1,6 +1,4 @@
-github.com/frantjc/go-fn v0.2.0 h1:RlWxsfkLdAZ4ErvffYIxdXiLfy28GEcIhsXNpjTD1XE=
-github.com/frantjc/go-fn v0.2.0/go.mod h1:LQ1X03w8Lod4z9Mp3HS6Wm6h1TwEscqUeXfqJ4WgccA=
+github.com/frantjc/go-fn v0.3.0 h1:o+MfcZlgdEFMc8DN2aYYrjycX6evl3SBR0k4UtWG/E4=
+github.com/frantjc/go-fn v0.3.0/go.mod h1:1W4VAsm6bbEaIcE9r7zYz7oUz8US+O3FVOSYORt2fB8=
 github.com/google/uuid v1.3.0 h1:t6JiXgmwXMjEs8VusXIJk2BXHsn+wx8BZdTaoZ5fu7I=
 github.com/google/uuid v1.3.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
-golang.org/x/exp v0.0.0-20230213192124-5e25df0256eb h1:PaBZQdo+iSDyHT053FjUCgZQ/9uqVwPOcl7KSWhKn6w=
-golang.org/x/exp v0.0.0-20230213192124-5e25df0256eb/go.mod h1:CxIveKay+FTh1D0yPZemJVgC/95VzuuOLq5Qi4xnoYc=
