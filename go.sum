@@ -1,4 +1,4 @@
 github.com/frantjc/go-fn v0.3.0 h1:o+MfcZlgdEFMc8DN2aYYrjycX6evl3SBR0k4UtWG/E4=
 github.com/frantjc/go-fn v0.3.0/go.mod h1:1W4VAsm6bbEaIcE9r7zYz7oUz8US+O3FVOSYORt2fB8=
-github.com/google/uuid v1.3.0 h1:t6JiXgmwXMjEs8VusXIJk2BXHsn+wx8BZdTaoZ5fu7I=
-github.com/google/uuid v1.3.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
+github.com/google/uuid v1.3.1 h1:KjJaJ9iWZ3jOFZIf1Lqf4laDRCasjl0BCmnEGxkdLb4=
+github.com/google/uuid v1.3.1/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
