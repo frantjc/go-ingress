@@ -1,8 +1,7 @@
 module github.com/frantjc/go-ingress
 
-go 1.20
+go 1.21
 
 require (
-	github.com/frantjc/go-fn v0.3.0
 	github.com/google/uuid v1.3.0
 )

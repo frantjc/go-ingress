@@ -3,8 +3,6 @@ package ingress
 import (
 	"net/http"
 	"net/url"
-
-	"github.com/frantjc/go-fn"
 )
 
 func ExactPath(path string, backend http.Handler) Path {
@@ -31,5 +29,9 @@ func (p *exactPath) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *exactPath) Matches(requestPath string) int {
-	return fn.Ternary(p.path == requestPath, -1, 0)
+	if p.path == requestPath {
+		return -1
+	}
+
+	return 0
 }

@@ -4,8 +4,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-
-	"github.com/frantjc/go-fn"
 )
 
 func PrefixPath(path string, backend http.Handler) Path {
@@ -48,7 +46,13 @@ func (p *prefixPath) Matches(requestPath string) int {
 }
 
 func getElements(requestPath string) []string {
-	return fn.Filter(strings.Split(requestPath, "/"), func(element string, _ int) bool {
-		return element != ""
-	})
+	elements := []string{}
+
+	for _, element := range strings.Split(requestPath, "/") {
+		if element != "" {
+			elements = append(elements, element)
+		}
+	}
+
+	return elements
 }
