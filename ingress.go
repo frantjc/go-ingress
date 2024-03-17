@@ -2,15 +2,18 @@ package ingress
 
 import "net/http"
 
-type paths []Path
+type Ingress struct {
+	Paths []Path
+	DefaultBackend http.Handler
+}
 
-func (ps paths) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (i *Ingress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var (
-		contender = http.NotFoundHandler()
+		contender = i.DefaultBackend
 		strongest = 0
 	)
 
-	for _, p := range ps {
+	for _, p := range i.Paths {
 		weight := p.Matches(r.URL.Path)
 		if weight < 0 {
 			p.ServeHTTP(w, r)
@@ -21,11 +24,16 @@ func (ps paths) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if contender == nil {
+		contender = http.NotFoundHandler()
+	}
+
 	contender.ServeHTTP(w, r)
 }
 
-func New(ps ...Path) http.Handler {
-	hndlr := make(paths, len(ps))
-	copy(hndlr, ps)
-	return hndlr
+func New(paths ...Path) *Ingress {
+	return &Ingress{
+		Paths: paths,
+		DefaultBackend: http.NotFoundHandler(),
+	}
 }
