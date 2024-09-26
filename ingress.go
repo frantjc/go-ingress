@@ -3,7 +3,7 @@ package ingress
 import "net/http"
 
 type Ingress struct {
-	Paths []Path
+	Paths          []Path
 	DefaultBackend http.Handler
 }
 
@@ -33,7 +33,7 @@ func (i *Ingress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func New(paths ...Path) *Ingress {
 	return &Ingress{
-		Paths: paths,
+		Paths:          paths,
 		DefaultBackend: http.NotFoundHandler(),
 	}
 }

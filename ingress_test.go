@@ -33,23 +33,24 @@ func TestIngress(t *testing.T) {
 	// get the address of said port
 	addr, err := url.Parse("http://" + l.Addr().String())
 	if err != nil {
-		panic(err)
+		t.Error(err)
+		t.FailNow()
 	}
 
-	// serve on the random port
+	// Serve on the random available port.
 	//nolint:errcheck,gosec
 	go http.Serve(
 		l,
 		ingress.New(
 			ingress.PrefixPath(
 				"/prefix",
-				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.Write([]byte(prefixBody))
 				}),
 			),
 			ingress.ExactPath(
 				"/exact",
-				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.Write([]byte(exactBody))
 				}),
 			),
@@ -70,12 +71,14 @@ func TestIngress(t *testing.T) {
 	} {
 		res, err := http.Get(addr.JoinPath(m.path).String())
 		if err != nil {
-			panic(err)
+			t.Error(err)
+			t.FailNow()
 		}
 
 		b, err := io.ReadAll(res.Body)
 		if err != nil {
-			panic(err)
+			t.Error(err)
+			t.FailNow()
 		}
 		defer res.Body.Close()
 
