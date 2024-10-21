@@ -11,14 +11,14 @@ import (
 )
 
 func main() {
-	// listen on a random port
+	// Listen on a random port.
 	l, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
 		panic(err)
 	}
 	defer l.Close()
 
-	// get the address of said port
+	// Get the address of said port.
 	addr, err := url.Parse("http://" + l.Addr().String())
 	if err != nil {
 		panic(err)
@@ -53,22 +53,22 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
+		defer res.Body.Close()
 
 		b, err := io.ReadAll(res.Body)
 		if err != nil {
 			panic(err)
 		}
-		defer res.Body.Close()
 
 		fmt.Println(path, " => ", string(b))
 	}
-	// /notfound  =>  404 page not found
+	// /notfound  =>  404 page not found.
 
-	// /exact/  =>  404 page not found
+	// /exact/  =>  404 page not found.
 
-	// /exact  =>  Exact
+	// /exact  =>  Exact.
 
-	// /prefix  =>  Prefix
+	// /prefix  =>  Prefix.
 
-	// /prefix/  =>  Prefix
+	// /prefix/  =>  Prefix.
 }
