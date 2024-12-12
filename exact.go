@@ -13,7 +13,7 @@ func WithMatchIgnoreSlash(p *exactPath) {
 	p.ignoreTrailingSlash = true
 }
 
-func ExactPath(path string, backend http.Handler, opts... ExactPathOpt) Path {
+func ExactPath(path string, backend http.Handler, opts ...ExactPathOpt) Path {
 	cleaned, err := url.JoinPath("/", path)
 	if err != nil {
 		panic("ingress: invalid path")
@@ -29,8 +29,8 @@ func ExactPath(path string, backend http.Handler, opts... ExactPathOpt) Path {
 }
 
 type exactPath struct {
-	path    string
-	backend http.Handler
+	path                string
+	backend             http.Handler
 	ignoreTrailingSlash bool
 }
 
@@ -49,7 +49,7 @@ func (p *exactPath) Matches(requestPath string) int {
 			return math.MaxInt
 		}
 	}
-	
+
 	if p.path == requestPath {
 		return math.MaxInt
 	}
