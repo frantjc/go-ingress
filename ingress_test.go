@@ -83,7 +83,7 @@ func TestIngress(t *testing.T) {
 		defer res.Body.Close()
 
 		if string(b) != m.expected {
-			t.Error("actual", string(b), "does not equal expected", m.expected)
+			t.Error("actual", string(b), "from path", m.path, "does not equal expected", m.expected)
 			t.FailNow()
 		}
 	}
