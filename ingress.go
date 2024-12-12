@@ -14,11 +14,7 @@ func (i *Ingress) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	)
 
 	for _, p := range i.Paths {
-		weight := p.Matches(r.URL.Path)
-		if weight < 0 {
-			p.ServeHTTP(w, r)
-			return
-		} else if weight > strongest {
+		if weight := p.Matches(r.URL.Path); weight > strongest {
 			strongest = weight
 			contender = p
 		}
