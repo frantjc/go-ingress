@@ -10,6 +10,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"slices"
+	"sync"
 
 	"github.com/frantjc/go-ingress"
 	"github.com/frantjc/go-ingress/internal/logutil"
@@ -33,7 +34,10 @@ type IngressReconciler struct {
 	record.EventRecorder
 	*rest.Config
 	*kubernetes.Clientset
-	PortForward bool
+	Portforward bool
+
+	svcKeyToForwardAddr sync.Map
+	close               func() error
 }
 
 // +kubebuilder:rbac:groups=networking/v1,resources=ingresses,verbs=get;list;watch
@@ -48,7 +52,7 @@ func (r *IngressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	var (
 		log = logutil.SloggerFrom(ctx)
 	)
-	// Just populating the client cache is sufficient.
+	// Just populating the client cache is sufficient for now.
 	log.Info(req.String())
 
 	return ctrl.Result{}, nil
@@ -56,8 +60,8 @@ func (r *IngressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 func (r *IngressReconciler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var (
-		ctx         = req.Context()
-		log         = logutil.SloggerFrom(ctx).With("action", "ServeHTTP", "host", req.Host, "path", req.URL.Path)
+		ctx     = req.Context()
+		log     = logutil.SloggerFrom(ctx).With("action", "ServeHTTP", "host", req.Host, "path", req.URL.Path)
 		ingList = &networkingv1.IngressList{}
 	)
 	log.Info("serving")
@@ -70,10 +74,9 @@ func (r *IngressReconciler) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 	paths := []ingress.Path{}
 
 	for _, ing := range ingList.Items {
-		ingLog := log.With("ingress", fmt.Sprintf("%s/%s", ing.Namespace, ing.Name))
+		_log := log.With("ingress", fmt.Sprintf("%s/%s", ing.Namespace, ing.Name))
 
 		ingRule := xslices.Find(ing.Spec.Rules, func(ingRule networkingv1.IngressRule, _ int) bool {
-			log.Debug("comparing rule", "host", ingRule.Host)
 			return ingRule.Host == req.Host
 		})
 
@@ -81,118 +84,17 @@ func (r *IngressReconciler) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 			continue
 		}
 
-		ingLog.Debug("found matching rule")
+		_log.Debug("found matching rule")
 
 		for _, ingPath := range ingRule.HTTP.Paths {
 			if ingPath.PathType == nil {
 				continue
 			}
 
-			if ingPath.Backend.Service == nil {
+			handler, err := r.handlerForBackend(logutil.SloggerInto(ctx, _log), ing.Namespace, ingPath.Backend)
+			if err != nil {
+				_log.Error(err.Error())
 				continue
-			}
-
-			var (
-				svcName = ingPath.Backend.Service.Name
-				tgtPort = fmt.Sprint(ingPath.Backend.Service.Port.Number)
-				svcKey  = client.ObjectKey{Namespace: ing.Namespace, Name: svcName}
-				svcLog  = ingLog.With("svc", svcKey.String())
-			)
-			if ingPath.Backend.Service.Port.Name != "" {
-				svcLog.Debug("finding service port number by name")
-				svc := &corev1.Service{}
-
-				if err := r.Get(ctx, svcKey, svc); err != nil {
-					log.Error(err.Error())
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-
-				svcPort := xslices.Find(svc.Spec.Ports, func(svcPort corev1.ServicePort, _ int) bool {
-					return svcPort.Name == svcName
-				})
-
-				tgtPort = fmt.Sprint(svcPort.Port)
-			}
-
-			reverseProxy := httputil.NewSingleHostReverseProxy(&url.URL{
-				Scheme: "http",
-				Host: fmt.Sprintf("%s.%s.svc.cluster.local:%s", svcName, ing.Namespace, tgtPort),
-			})
-			reverseProxy.ErrorLog = slog.NewLogLogger(log.Handler(), slog.LevelError)
-			var handler http.Handler = reverseProxy
-
-			if r.PortForward {
-				var (
-					podList = &corev1.PodList{}
-					svc     = &corev1.Service{}
-				)
-
-				if err := r.Get(ctx, svcKey, svc); err != nil {
-					svcLog.Error(err.Error())
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-
-				svcPort := xslices.Find(svc.Spec.Ports, func(svcPort corev1.ServicePort, _ int) bool {
-					return svcPort.Name == svcName
-				})
-
-				tgtPort = svcPort.TargetPort.String()
-
-				if err := r.Client.List(ctx, podList, &client.ListOptions{
-					Namespace: ing.Namespace,
-					LabelSelector: labels.SelectorFromSet(svc.Spec.Selector),
-				}); err != nil {
-					svcLog.Error(err.Error())
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-
-				roundTripper, upgrader, err := spdy.RoundTripperFor(r.Config)
-				if err != nil {
-					svcLog.Error(err.Error())
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-
-				for _, pod := range podList.Items {
-					var (
-						podLog = svcLog.With("pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name))
-						dialer = spdy.NewDialer(
-							upgrader,
-							&http.Client{Transport: roundTripper},
-							http.MethodPost,
-							r.CoreV1().RESTClient().
-								Post().
-								Resource("pods").
-								Namespace(pod.Namespace).
-								Name(pod.Name).
-								SubResource("portforward").
-								URL(),
-						)
-						stopC = make(chan struct{}, 1)
-						readyC = make(chan struct{}, 1)
-					)
-					podLog.Debug("portforwarding")
-
-					pf, err := portforward.New(dialer, []string{fmt.Sprintf(":%s", tgtPort)}, stopC, readyC, io.Discard, io.Discard)
-					if err != nil {
-						podLog.Error(err.Error())
-						http.Error(w, err.Error(), http.StatusInternalServerError)
-						return
-					}
-					defer pf.Close()
-
-					fp, err := pf.GetPorts()
-					if err != nil {
-						podLog.Error(err.Error())
-						http.Error(w, err.Error(), http.StatusInternalServerError)
-						return
-					}
-
-					pf.ForwardPorts()
-				}
 			}
 
 			switch *ingPath.PathType {
@@ -209,10 +111,10 @@ func (r *IngressReconciler) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 
 func (r *IngressReconciler) GetCertificate(chi *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	var (
-		// TODO(frantjc): Find a way to set chi.ctx.
-		ctx       = chi.Context()
-		log       = slog.New(logr.ToSlogHandler(ctrl.Log)).With("serverName", chi.ServerName, "action", "GetCertificate")
-		ingList   = &networkingv1.IngressList{}
+		// TODO(frantjc): Find a way to set chi.ctx so that we can use our context-propagated logger.
+		ctx     = chi.Context()
+		log     = slog.New(logr.ToSlogHandler(ctrl.Log)).With("serverName", chi.ServerName, "action", "GetCertificate")
+		ingList = &networkingv1.IngressList{}
 	)
 
 	if err := r.List(ctx, ingList); err != nil {
@@ -220,32 +122,32 @@ func (r *IngressReconciler) GetCertificate(chi *tls.ClientHelloInfo) (*tls.Certi
 	}
 
 	for _, ing := range ingList.Items {
-		ingLog := log.With("ingress", fmt.Sprintf("%s/%s", ing.Namespace, ing.Name))
+		_log := log.With("ingress", fmt.Sprintf("%s/%s", ing.Namespace, ing.Name))
 
 		if xslices.Some(ing.Spec.Rules, func(ingressRule networkingv1.IngressRule, _ int) bool {
 			return ingressRule.Host == chi.ServerName
 		}) {
-			ingLog.Debug("found matching rule")
+			_log.Debug("found matching rule")
 
 			ingTLS := xslices.Find(ing.Spec.TLS, func(ingTLS networkingv1.IngressTLS, _ int) bool {
 				return slices.Contains(ingTLS.Hosts, chi.ServerName)
 			})
 
-			tlsLog := ingLog.With("tlsSecret", fmt.Sprintf("%s/%s", ing.Namespace, ingTLS.SecretName))
+			_log = _log.With("tlsSecret", fmt.Sprintf("%s/%s", ing.Namespace, ingTLS.SecretName))
 
-			if ingTLS.SecretName != "" {				
-				tlsLog.Debug("found matching tls")
+			if ingTLS.SecretName != "" {
+				_log.Debug("found matching tls")
 
 				sec := &corev1.Secret{}
 
 				if err := r.Get(ctx, client.ObjectKey{Namespace: ing.Namespace, Name: ingTLS.SecretName}, sec); err != nil {
-					tlsLog.Error(err.Error())
+					_log.Error(err.Error())
 					return nil, err
 				}
 
 				crt, err := tls.X509KeyPair(sec.Data["tls.crt"], sec.Data["tls.key"])
 				if err != nil {
-					tlsLog.Error(err.Error())
+					_log.Error(err.Error())
 					return nil, err
 				}
 
@@ -265,8 +167,176 @@ func (r *IngressReconciler) SetupWithManager(mgr ctrl.Manager) (err error) {
 	if r.Clientset, err = kubernetes.NewForConfig(r.Config); err != nil {
 		return err
 	}
-
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&networkingv1.Ingress{}).
 		Complete(r)
+}
+
+func (r *IngressReconciler) handlerForBackend(ctx context.Context, namespace string, ingressBackend networkingv1.IngressBackend) (http.Handler, error) {
+	if ingressBackend.Service != nil {
+		return r.handlerForService(ctx, namespace, *ingressBackend.Service)
+	}
+
+	return nil, fmt.Errorf("unsupported ingress rule backend")
+}
+
+func (r *IngressReconciler) handlerForService(ctx context.Context, namespace string, ingressBackendService networkingv1.IngressServiceBackend) (http.Handler, error) {
+	if r.Portforward {
+		return r.handlerForPortforward(ctx, namespace, ingressBackendService)
+	}
+
+	var (
+		targetPort = fmt.Sprint(ingressBackendService.Port.Number)
+		svcKey     = client.ObjectKey{Namespace: namespace, Name: ingressBackendService.Name}
+		log        = logutil.SloggerFrom(ctx).With("svc", svcKey.String())
+	)
+	if ingressBackendService.Port.Name != "" {
+		log.Debug("finding service port number by name")
+		svc := &corev1.Service{}
+
+		if err := r.Get(ctx, svcKey, svc); err != nil {
+			return nil, err
+		}
+
+		svcPort := xslices.Find(svc.Spec.Ports, func(svcPort corev1.ServicePort, _ int) bool {
+			return svcPort.Name == ingressBackendService.Port.Name
+		})
+
+		if svcPort.Port == 0 {
+			return nil, fmt.Errorf("unknown service port name %s", ingressBackendService.Port.Name)
+		}
+
+		targetPort = fmt.Sprint(svcPort.Port)
+	}
+
+	reverseProxy := httputil.NewSingleHostReverseProxy(&url.URL{
+		Scheme: "http",
+		Host:   fmt.Sprintf("%s.%s.svc.cluster.local:%s", svcKey.Name, namespace, targetPort),
+	})
+	errorLog := slog.NewLogLogger(log.Handler(), slog.LevelError)
+	reverseProxy.ErrorLog = errorLog
+	return reverseProxy, nil
+}
+
+func (r *IngressReconciler) handlerForPortforward(ctx context.Context, namespace string, ingressBackendService networkingv1.IngressServiceBackend) (http.Handler, error) {
+	var (
+		svcKey  = client.ObjectKey{Namespace: namespace, Name: ingressBackendService.Name}
+		log     = logutil.SloggerFrom(ctx).With("svc", svcKey.String())
+		podList = &corev1.PodList{}
+		svc     = &corev1.Service{}
+	)
+
+	if forwardAddr, ok := r.svcKeyToForwardAddr.Load(svcKey.String()); ok {
+		log.Debug("using existing portforward " + forwardAddr.(string))
+		reverseProxy := httputil.NewSingleHostReverseProxy(&url.URL{
+			Scheme: "http",
+			Host:   forwardAddr.(string),
+		})
+		errorLog := slog.NewLogLogger(log.Handler(), slog.LevelError)
+		reverseProxy.ErrorLog = errorLog
+		return reverseProxy, nil
+	}
+
+	if err := r.Get(ctx, svcKey, svc); err != nil {
+		return nil, err
+	}
+
+	svcPort := xslices.Find(svc.Spec.Ports, func(svcPort corev1.ServicePort, _ int) bool {
+		return svcPort.Name == ingressBackendService.Port.Name
+	})
+
+	targetPort := svcPort.TargetPort.String()
+
+	if err := r.Client.List(ctx, podList, &client.ListOptions{
+		Namespace:     namespace,
+		LabelSelector: labels.SelectorFromSet(svc.Spec.Selector),
+	}); err != nil {
+		return nil, err
+	}
+
+	roundTripper, upgrader, err := spdy.RoundTripperFor(r.Config)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, pod := range podList.Items {
+		var (
+			log    = log.With("pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name), "targetPort", targetPort)
+			dialer = spdy.NewDialer(
+				upgrader,
+				&http.Client{Transport: roundTripper},
+				http.MethodPost,
+				r.CoreV1().
+					RESTClient().
+					Post().
+					Resource("pods").
+					Namespace(pod.Namespace).
+					Name(pod.Name).
+					SubResource("portforward").
+					URL(),
+			)
+			stopC  = make(chan struct{})
+			readyC = make(chan struct{}, 1)
+		)
+		if r.close == nil {
+			r.close = func() error {
+				return nil
+			}
+		}
+		r.close = func() error {
+			close(stopC)
+			return r.close()
+		}
+		log.Debug("portforwarding")
+
+		portforwarder, err := portforward.New(
+			dialer,
+			// Choose any available port--this is ephemeral, and we can get it back from portforwarder.GetPorts().
+			[]string{fmt.Sprintf(":%s", targetPort)},
+			stopC, readyC,
+			// TODO(frantjc): Direct these to log.Debug and log.Error, respectively.
+			io.Discard, io.Discard,
+		)
+		if err != nil {
+			return nil, err
+		}
+		r.close = func() error {
+			portforwarder.Close()
+			return r.close()
+		}
+
+		go func() {
+			if err := portforwarder.ForwardPorts(); err != nil {
+				log.Error(err.Error())
+			}
+			r.svcKeyToForwardAddr.Delete(svcKey.String())
+		}()
+		<-readyC
+
+		forwardedPorts, err := portforwarder.GetPorts()
+		if err != nil {
+			return nil, err
+		}
+
+		for _, forwardedPort := range forwardedPorts {
+			if fmt.Sprint(forwardedPort.Remote) == targetPort {
+				forwardAddr := fmt.Sprintf("127.0.0.1:%d", forwardedPort.Local)
+				log.Debug("portforwarded " + forwardAddr)
+				r.svcKeyToForwardAddr.Store(svcKey.String(), forwardAddr)
+				reverseProxy := httputil.NewSingleHostReverseProxy(&url.URL{
+					Scheme: "http",
+					Host:   forwardAddr,
+				})
+				errorLog := slog.NewLogLogger(log.Handler(), slog.LevelError)
+				reverseProxy.ErrorLog = errorLog
+				return reverseProxy, nil
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("unable to portforward to any Pods")
+}
+
+func (r *IngressReconciler) Close() error {
+	return nil
 }

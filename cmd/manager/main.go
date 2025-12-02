@@ -51,7 +51,7 @@ func newManager() *cobra.Command {
 		probeAddr            string
 		enableLeaderElection bool
 		slogConfig           = new(logutil.SlogConfig)
-		reconciler = new(controller.IngressReconciler)
+		reconciler           = new(controller.IngressReconciler)
 		cmd                  = &cobra.Command{
 			Use:           "manager",
 			Version:       SemVer(),
@@ -123,6 +123,7 @@ func newManager() *cobra.Command {
 				if err := reconciler.SetupWithManager(mgr); err != nil {
 					return err
 				}
+				defer reconciler.Close()
 
 				var (
 					srv = &http.Server{
@@ -160,7 +161,7 @@ func newManager() *cobra.Command {
 				eg.Go(func() error {
 					return srv.Serve(tls.NewListener(lis, tlsConfig))
 				})
-	
+
 				return eg.Wait()
 			},
 		}
@@ -178,7 +179,7 @@ func newManager() *cobra.Command {
 	cmd.Flags().BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager")
 
 	cmd.Flags().StringVar(&addr, "addr", ":8080", "Ingress server bind address")
-	cmd.Flags().BoolVar(&reconciler.PortForward, "port-forward", false, "Portforward to Pods")
+	cmd.Flags().BoolVar(&reconciler.Portforward, "port-forward", false, "Portforward to Pods")
 
 	return cmd
 }
