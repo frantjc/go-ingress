@@ -69,8 +69,8 @@ func (m *GoIngressDev) Generate(ctx context.Context) *dagger.Changeset {
 			"controller-gen",
 			// generate [Validating|Mutating]WebhookConfigurations (none as of writing).
 			"webhook",
-			// generate ClusterRole for controllers in internal/controller/** and put it in config/rbac (default location).
-			"rbac:roleName=go-ingress", "paths=./internal/controller/...",
+			// generate ClusterRole for controllers in internal/controller/** and cmd/manager/** and put it in config/rbac (default location).
+			"rbac:roleName=go-ingress", "paths=./internal/controller/...", "paths=./cmd/manager/...",
 		}).
 		Directory(".").
 		Changes(m.Source)
