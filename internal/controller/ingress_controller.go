@@ -9,9 +9,11 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"slices"
+	"strconv"
 	"sync"
 
 	"github.com/frantjc/go-ingress"
+	"github.com/frantjc/go-ingress/api/v1alpha1"
 	"github.com/frantjc/go-ingress/internal/logutil"
 	xio "github.com/frantjc/x/io"
 	xslices "github.com/frantjc/x/slices"
@@ -31,15 +33,20 @@ import (
 
 // IngressReconciler reconciles a Ingress object
 type IngressReconciler struct {
+	// From manager via SetupWithManager.
 	client.Client
 	record.EventRecorder
 	*rest.Config
 	*kubernetes.Clientset
-	Portforward                   bool
+	// CLI args.
 	GetIngressLoadBalancerIngress func(ctx context.Context) (*networkingv1.IngressLoadBalancerIngress, error)
 	IngressClassName              string
-	svcKeyToForwardAddr           sync.Map
-	close                         func() error
+	// Portforward to a Service-selected Pods instead of using Service DNS.
+	// Useful for when running outside of the cluster we're reconciling.
+	Portforward bool
+	// Internal, only used when Portforward is true.
+	svcKeyToForwardAddr sync.Map
+	close               func() error
 }
 
 // +kubebuilder:rbac:groups=networking/v1,resources=ingresses;ingressclasses,verbs=get;list;watch
@@ -47,6 +54,7 @@ type IngressReconciler struct {
 // +kubebuilder:rbac:groups=networking/v1,resources=ingresses/status,verbs=update
 // +kubebuilder:rbac:groups="",resources=pods;secrets;services,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods/portforwards,verbs=create
+// +kubebuilder:rbac:groups=backend.ingress.frantj.cc,resources=proxies;redirects,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -71,8 +79,33 @@ func (r *IngressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	if ing.Spec.IngressClassName == nil {
-		ing.Spec.IngressClassName = &r.IngressClassName
-		if err := r.Update(ctx, ing, client.DryRunAll); err != nil {
+		if ing.Annotations != nil {
+			if ingClassName, ok := ing.Annotations["kubernetes.io/ingress.class"]; ok {
+				if ingClassName != r.IngressClassName {
+					return ctrl.Result{}, nil
+				}
+			}
+		}
+
+		ingClass := &networkingv1.IngressClass{}
+
+		if err := r.Get(ctx, client.ObjectKey{Name: r.IngressClassName}, ingClass); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		isDefaultIngressClass := false
+		if ingClass.Annotations != nil {
+			if rawIsDefaultClass, ok := ingClass.Annotations[networkingv1.AnnotationIsDefaultIngressClass]; ok {
+				isDefaultIngressClass, _ = strconv.ParseBool(rawIsDefaultClass)
+			}
+		}
+
+		if !isDefaultIngressClass {
+			return ctrl.Result{}, nil
+		}
+
+		ing.Spec.IngressClassName = &ingClass.Name
+		if err := r.Update(ctx, ing); err != nil {
 			return ctrl.Result{}, err
 		}
 	} else if *ing.Spec.IngressClassName != r.IngressClassName {
@@ -81,7 +114,7 @@ func (r *IngressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	ing.Status.LoadBalancer.Ingress = []networkingv1.IngressLoadBalancerIngress{*ingressLoadBalancerIngress}
 
-	if err := r.Status().Update(ctx, ing, client.DryRunAll); err != nil {
+	if err := r.Status().Update(ctx, ing); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -94,7 +127,7 @@ func (r *IngressReconciler) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 		log     = logutil.SloggerFrom(ctx).With("action", "ServeHTTP", "host", req.Host, "path", req.URL.Path)
 		ingList = &networkingv1.IngressList{}
 	)
-	log.Info("serving")
+	log.Debug("serving")
 
 	if err := r.List(ctx, ingList); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -104,39 +137,69 @@ func (r *IngressReconciler) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 	paths := []ingress.Path{}
 
 	for _, ing := range ingList.Items {
-		if ing.Spec.IngressClassName == nil || ing.Spec.IngressClassName != &r.IngressClassName {
-			continue
-		}
-
 		_log := log.With("ingress", fmt.Sprintf("%s/%s", ing.Namespace, ing.Name))
 
-		ingRule := xslices.Find(ing.Spec.Rules, func(ingRule networkingv1.IngressRule, _ int) bool {
-			return ingRule.Host == req.Host
-		})
-
-		if ingRule.HTTP == nil {
+		if ing.Spec.IngressClassName == nil {
+			_log.Debug("skipping, ingress class name is not set")
+			continue
+		} else if *ing.Spec.IngressClassName != r.IngressClassName {
+			_log.Debug("skipping, ingress class name does not match")
 			continue
 		}
 
-		_log.Debug("found matching rule")
-
-		for _, ingPath := range ingRule.HTTP.Paths {
-			if ingPath.PathType == nil {
+		for _, ingRule := range ing.Spec.Rules {
+			if ingRule.Host != req.Host {
 				continue
 			}
 
-			handler, err := r.handlerForBackend(logutil.SloggerInto(ctx, _log), ing.Namespace, ingPath.Backend)
-			if err != nil {
-				_log.Error(err.Error())
+			if ingRule.HTTP == nil {
 				continue
 			}
 
-			switch *ingPath.PathType {
-			case networkingv1.PathTypeExact:
-				paths = append(paths, ingress.ExactPath(ingPath.Path, handler))
-			case networkingv1.PathTypePrefix, networkingv1.PathTypeImplementationSpecific:
-				paths = append(paths, ingress.PrefixPath(ingPath.Path, handler))
+			_log.Debug("found matching rule")
+
+			for _, ingPath := range ingRule.HTTP.Paths {
+				if ingPath.PathType == nil {
+					continue
+				}
+
+				handler := http.HandlerFunc(func(_w http.ResponseWriter, _req *http.Request) {
+					backend, err := r.handlerForBackend(logutil.SloggerInto(ctx, _log), ing.Namespace, ingPath.Backend)
+					if err != nil {
+						_log.Error(err.Error())
+						http.Error(_w, err.Error(), http.StatusInternalServerError)
+						return
+					}
+
+					backend.ServeHTTP(_w, _req)
+				})
+
+				switch *ingPath.PathType {
+				case networkingv1.PathTypeExact:
+					paths = append(paths, ingress.ExactPath(ingPath.Path, handler))
+				case networkingv1.PathTypePrefix:
+					paths = append(paths, ingress.PrefixPath(ingPath.Path, handler))
+				case networkingv1.PathTypeImplementationSpecific:
+					paths = append(paths, ingress.ExactPath(ingPath.Path, handler, ingress.WithMatchIgnoreSlash))
+				}
 			}
+		}
+
+		if len(paths) == 0 && ing.Spec.DefaultBackend != nil {
+			_log.Debug("no rule paths matched, using default backend")
+
+			handler := http.HandlerFunc(func(_w http.ResponseWriter, _req *http.Request) {
+				backend, err := r.handlerForBackend(logutil.SloggerInto(ctx, _log), ing.Namespace, *ing.Spec.DefaultBackend)
+				if err != nil {
+					_log.Error(err.Error())
+					http.Error(_w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+
+				backend.ServeHTTP(_w, _req)
+			})
+
+			paths = append(paths, ingress.PrefixPath("/", handler))
 		}
 	}
 
@@ -201,6 +264,7 @@ func (r *IngressReconciler) SetupWithManager(mgr ctrl.Manager) (err error) {
 	if r.Clientset, err = kubernetes.NewForConfig(r.Config); err != nil {
 		return err
 	}
+	// TODO(frantjc): Should we set up informers for other resources?
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&networkingv1.Ingress{}).
 		Complete(r)
@@ -209,6 +273,61 @@ func (r *IngressReconciler) SetupWithManager(mgr ctrl.Manager) (err error) {
 func (r *IngressReconciler) handlerForBackend(ctx context.Context, namespace string, ingressBackend networkingv1.IngressBackend) (http.Handler, error) {
 	if ingressBackend.Service != nil {
 		return r.handlerForService(ctx, namespace, *ingressBackend.Service)
+	}
+
+	if ingressBackend.Resource != nil {
+		if ingressBackend.Resource.APIGroup != nil {
+			group := *ingressBackend.Resource.APIGroup
+			switch group {
+			case "backend.ingress.frantj.cc":
+				log := logutil.SloggerFrom(ctx).With("backend", fmt.Sprintf("%s.%s", ingressBackend.Resource.Kind, group))
+
+				switch ingressBackend.Resource.Kind {
+				case "Redirect":
+					return http.HandlerFunc(func(_w http.ResponseWriter, _req *http.Request) {
+						red := &v1alpha1.Redirect{}
+
+						if err := r.Get(_req.Context(), client.ObjectKey{Namespace: namespace, Name: ingressBackend.Resource.Name}, red); err != nil {
+							log.Error(err.Error())
+							http.Error(_w, err.Error(), http.StatusInternalServerError)
+							return
+						}
+
+						u, err := url.Parse(red.Spec.URL)
+						if err != nil {
+							log.Error(err.Error())
+							http.Error(_w, err.Error(), http.StatusInternalServerError)
+							return
+						}
+
+						http.Redirect(
+							_w, _req,
+							u.String(),
+							http.StatusPermanentRedirect,
+						)
+					}), nil
+				case "Proxy":
+					return http.HandlerFunc(func(_w http.ResponseWriter, _req *http.Request) {
+						pxy := &v1alpha1.Proxy{}
+
+						if err := r.Get(_req.Context(), client.ObjectKey{Namespace: namespace, Name: ingressBackend.Resource.Name}, pxy); err != nil {
+							log.Error(err.Error())
+							http.Error(_w, err.Error(), http.StatusInternalServerError)
+							return
+						}
+
+						u, err := url.Parse(pxy.Spec.URL)
+						if err != nil {
+							log.Error(err.Error())
+							http.Error(_w, err.Error(), http.StatusInternalServerError)
+							return
+						}
+
+						httputil.NewSingleHostReverseProxy(u).ServeHTTP(_w, _req)
+					}), nil
+				}
+			}
+		}
 	}
 
 	return nil, fmt.Errorf("unsupported ingress rule backend")
@@ -325,7 +444,7 @@ func (r *IngressReconciler) handlerForPortforward(ctx context.Context, namespace
 			}
 		}
 		r.close = func() error {
-			close(stopC)
+			defer close(stopC)
 			return r.close()
 		}
 		log.Debug("portforwarding")
@@ -348,7 +467,7 @@ func (r *IngressReconciler) handlerForPortforward(ctx context.Context, namespace
 			return nil, err
 		}
 		r.close = func() error {
-			portforwarder.Close()
+			defer portforwarder.Close()
 			return r.close()
 		}
 
@@ -385,5 +504,8 @@ func (r *IngressReconciler) handlerForPortforward(ctx context.Context, namespace
 }
 
 func (r *IngressReconciler) Close() error {
+	if r.close != nil {
+		return r.close()
+	}
 	return nil
 }

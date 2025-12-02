@@ -67,10 +67,14 @@ func (m *GoIngressDev) Generate(ctx context.Context) *dagger.Changeset {
 		WithExec([]string{
 			// Order of the arguments doesn't seem to matter here. Can break this up into multiple execs if needed.
 			"controller-gen",
+			// generate CustomResourceDefinitions for types in api/** and put them in config/crd.
+			"crd", "paths=./api/...", "output:crd:artifacts:config=config/crd",
 			// generate [Validating|Mutating]WebhookConfigurations (none as of writing).
 			"webhook",
+			// generate api/**/zz_generated.deepcopy.go for types in api/**.
+			"object",
 			// generate ClusterRole for controllers in internal/controller/** and cmd/manager/** and put it in config/rbac (default location).
-			"rbac:roleName=go-ingress", "paths=./internal/controller/...", "paths=./cmd/manager/...",
+			"rbac:roleName=go-ingress", "paths=./cmd/...", "paths=./internal/...",
 		}).
 		Directory(".").
 		Changes(m.Source)
