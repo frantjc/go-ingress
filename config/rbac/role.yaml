@@ -23,6 +23,7 @@ rules:
 - apiGroups:
   - networking/v1
   resources:
+  - ingressclasses
   - ingresses
   verbs:
   - get
@@ -32,13 +33,6 @@ rules:
   - networking/v1
   resources:
   - ingresses/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - networking/v1
-  resources:
   - ingresses/status
   verbs:
-  - get
-  - patch
   - update

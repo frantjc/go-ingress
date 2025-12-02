@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
@@ -14,10 +13,12 @@ import (
 
 	"github.com/frantjc/go-ingress"
 	"github.com/frantjc/go-ingress/internal/logutil"
+	xio "github.com/frantjc/x/io"
 	xslices "github.com/frantjc/x/slices"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -34,15 +35,16 @@ type IngressReconciler struct {
 	record.EventRecorder
 	*rest.Config
 	*kubernetes.Clientset
-	Portforward bool
-
-	svcKeyToForwardAddr sync.Map
-	close               func() error
+	Portforward                   bool
+	GetIngressLoadBalancerIngress func(ctx context.Context) (*networkingv1.IngressLoadBalancerIngress, error)
+	IngressClassName              string
+	svcKeyToForwardAddr           sync.Map
+	close                         func() error
 }
 
-// +kubebuilder:rbac:groups=networking/v1,resources=ingresses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking/v1,resources=ingresses;ingressclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=networking/v1,resources=ingresses/finalizers,verbs=update
-// +kubebuilder:rbac:groups=networking/v1,resources=ingresses/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=networking/v1,resources=ingresses/status,verbs=update
 // +kubebuilder:rbac:groups="",resources=pods;secrets;services,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods/portforwards,verbs=create
 
@@ -51,9 +53,37 @@ type IngressReconciler struct {
 func (r *IngressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var (
 		log = logutil.SloggerFrom(ctx)
+		ing = &networkingv1.Ingress{}
 	)
-	// Just populating the client cache is sufficient for now.
 	log.Info(req.String())
+
+	if err := r.Get(ctx, req.NamespacedName, ing); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+
+		return ctrl.Result{}, err
+	}
+
+	ingressLoadBalancerIngress, err := r.GetIngressLoadBalancerIngress(ctx)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if ing.Spec.IngressClassName == nil {
+		ing.Spec.IngressClassName = &r.IngressClassName
+		if err := r.Update(ctx, ing, client.DryRunAll); err != nil {
+			return ctrl.Result{}, err
+		}
+	} else if *ing.Spec.IngressClassName != r.IngressClassName {
+		return ctrl.Result{}, nil
+	}
+
+	ing.Status.LoadBalancer.Ingress = []networkingv1.IngressLoadBalancerIngress{*ingressLoadBalancerIngress}
+
+	if err := r.Status().Update(ctx, ing, client.DryRunAll); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	return ctrl.Result{}, nil
 }
@@ -74,6 +104,10 @@ func (r *IngressReconciler) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 	paths := []ingress.Path{}
 
 	for _, ing := range ingList.Items {
+		if ing.Spec.IngressClassName == nil || ing.Spec.IngressClassName != &r.IngressClassName {
+			continue
+		}
+
 		_log := log.With("ingress", fmt.Sprintf("%s/%s", ing.Namespace, ing.Name))
 
 		ingRule := xslices.Find(ing.Spec.Rules, func(ingRule networkingv1.IngressRule, _ int) bool {
@@ -204,6 +238,8 @@ func (r *IngressReconciler) handlerForService(ctx context.Context, namespace str
 
 		if svcPort.Port == 0 {
 			return nil, fmt.Errorf("unknown service port name %s", ingressBackendService.Port.Name)
+		} else if svcPort.Protocol != corev1.ProtocolTCP {
+			return nil, fmt.Errorf("unsupported service port protocol %s", svcPort.Protocol)
 		}
 
 		targetPort = fmt.Sprint(svcPort.Port)
@@ -245,7 +281,12 @@ func (r *IngressReconciler) handlerForPortforward(ctx context.Context, namespace
 		return svcPort.Name == ingressBackendService.Port.Name
 	})
 
+	if svcPort.Protocol != corev1.ProtocolTCP {
+		return nil, fmt.Errorf("unsupported service port protocol %s", svcPort.Protocol)
+	}
+
 	targetPort := svcPort.TargetPort.String()
+	log = log.With("targetPort", targetPort)
 
 	if err := r.Client.List(ctx, podList, &client.ListOptions{
 		Namespace:     namespace,
@@ -261,7 +302,7 @@ func (r *IngressReconciler) handlerForPortforward(ctx context.Context, namespace
 
 	for _, pod := range podList.Items {
 		var (
-			log    = log.With("pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name), "targetPort", targetPort)
+			log    = log.With("pod", fmt.Sprintf("%s/%s", pod.Namespace, pod.Name))
 			dialer = spdy.NewDialer(
 				upgrader,
 				&http.Client{Transport: roundTripper},
@@ -275,7 +316,7 @@ func (r *IngressReconciler) handlerForPortforward(ctx context.Context, namespace
 					SubResource("portforward").
 					URL(),
 			)
-			stopC  = make(chan struct{})
+			stopC  = make(chan struct{}, 1)
 			readyC = make(chan struct{}, 1)
 		)
 		if r.close == nil {
@@ -294,8 +335,14 @@ func (r *IngressReconciler) handlerForPortforward(ctx context.Context, namespace
 			// Choose any available port--this is ephemeral, and we can get it back from portforwarder.GetPorts().
 			[]string{fmt.Sprintf(":%s", targetPort)},
 			stopC, readyC,
-			// TODO(frantjc): Direct these to log.Debug and log.Error, respectively.
-			io.Discard, io.Discard,
+			xio.WriterFunc(func(b []byte) (int, error) {
+				log.Debug(string(b))
+				return len(b), nil
+			}),
+			xio.WriterFunc(func(b []byte) (int, error) {
+				log.Error(string(b))
+				return len(b), nil
+			}),
 		)
 		if err != nil {
 			return nil, err

@@ -8,8 +8,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,6 +20,7 @@ import (
 	"github.com/frantjc/go-ingress/internal/logutil"
 	xerrors "github.com/frantjc/x/errors"
 	xos "github.com/frantjc/x/os"
+	xslices "github.com/frantjc/x/slices"
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
@@ -26,6 +30,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	// Registers --kubeconfig flag on flag.Commandline.
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	_ "sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -44,6 +49,8 @@ func main() {
 	xos.ExitFromError(err)
 }
 
+// +kubebuilder:rbac:groups="",resources=services,verbs=get
+
 func newManager() *cobra.Command {
 	var (
 		addr                 string
@@ -52,6 +59,7 @@ func newManager() *cobra.Command {
 		enableLeaderElection bool
 		slogConfig           = new(logutil.SlogConfig)
 		reconciler           = new(controller.IngressReconciler)
+		rawLoadBalancer      string
 		cmd                  = &cobra.Command{
 			Use:           "manager",
 			Version:       SemVer(),
@@ -69,6 +77,11 @@ func newManager() *cobra.Command {
 				ctrl.SetLogger(logr)
 
 				cfg, err := ctrl.GetConfig()
+				if err != nil {
+					return err
+				}
+
+				loadBalancer, err := url.Parse(rawLoadBalancer)
 				if err != nil {
 					return err
 				}
@@ -110,6 +123,49 @@ func newManager() *cobra.Command {
 				})
 				if err != nil {
 					return err
+				}
+
+				switch loadBalancer.Scheme {
+				case "raw", "":
+					reconciler.GetIngressLoadBalancerIngress = func(_ context.Context) (*networkingv1.IngressLoadBalancerIngress, error) {
+						ports := []networkingv1.IngressPortStatus{}
+						if port, err := strconv.Atoi(loadBalancer.Port()); err == nil {
+							ports = append(ports, networkingv1.IngressPortStatus{
+								Port:     int32(port),
+								Protocol: "tcp",
+							})
+						}
+						if net.ParseIP(loadBalancer.Hostname()) != nil {
+							return &networkingv1.IngressLoadBalancerIngress{
+								IP:    loadBalancer.Hostname(),
+								Ports: ports,
+							}, nil
+						}
+						return &networkingv1.IngressLoadBalancerIngress{
+							Hostname: loadBalancer.Hostname(),
+							Ports:    ports,
+						}, nil
+					}
+				case "service", "svc":
+					reconciler.GetIngressLoadBalancerIngress = func(ctx context.Context) (*networkingv1.IngressLoadBalancerIngress, error) {
+						svc := &corev1.Service{}
+
+						if err := mgr.GetClient().Get(ctx, client.ObjectKey{Namespace: loadBalancer.Host, Name: strings.TrimPrefix(loadBalancer.Path, "/")}, svc); err != nil {
+							return nil, err
+						}
+
+						for _, loadBalancerIngress := range svc.Status.LoadBalancer.Ingress {
+							return &networkingv1.IngressLoadBalancerIngress{
+								IP:       loadBalancerIngress.IP,
+								Hostname: loadBalancerIngress.Hostname,
+								Ports: xslices.Map(loadBalancerIngress.Ports, func(port corev1.PortStatus, _ int) networkingv1.IngressPortStatus {
+									return networkingv1.IngressPortStatus(port)
+								}),
+							}, nil
+						}
+
+						return nil, fmt.Errorf("unable to get load balancer ingress from %s", loadBalancer)
+					}
 				}
 
 				if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
@@ -180,6 +236,9 @@ func newManager() *cobra.Command {
 
 	cmd.Flags().StringVar(&addr, "addr", ":8080", "Ingress server bind address")
 	cmd.Flags().BoolVar(&reconciler.Portforward, "port-forward", false, "Portforward to Pods")
+	cmd.Flags().StringVar(&reconciler.IngressClassName, "ingress-class-name", "go.ingress.kubernetes.io", "IngressClass name")
+	cmd.Flags().StringVar(&rawLoadBalancer, "load-balancer", "", "LoadBalancer address")
+	cmd.MarkFlagRequired("load-balancer")
 
 	return cmd
 }
