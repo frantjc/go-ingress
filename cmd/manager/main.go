@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/frantjc/go-ingress/api/v1alpha1"
 	"github.com/frantjc/go-ingress/internal/controller"
 	"github.com/frantjc/go-ingress/internal/logutil"
 	xerrors "github.com/frantjc/x/errors"
@@ -53,7 +54,8 @@ func main() {
 
 func newManager() *cobra.Command {
 	var (
-		addr                 string
+		httpAddr             string
+		httpsAddr            string
 		metricsAddr          string
 		probeAddr            string
 		enableLeaderElection bool
@@ -108,6 +110,10 @@ func newManager() *cobra.Command {
 				}
 
 				if err := corev1.AddToScheme(scheme); err != nil {
+					return err
+				}
+
+				if err := v1alpha1.AddToScheme(scheme); err != nil {
 					return err
 				}
 
@@ -200,11 +206,25 @@ func newManager() *cobra.Command {
 					return mgr.Start(ctx)
 				})
 
-				lis, err := net.Listen("tcp", addr)
+				httpsLis, err := net.Listen("tcp", httpsAddr)
 				if err != nil {
 					return err
 				}
-				defer lis.Close()
+				defer httpsLis.Close()
+
+				eg.Go(func() error {
+					return srv.Serve(tls.NewListener(httpsLis, tlsConfig))
+				})
+
+				httpLis, err := net.Listen("tcp", httpAddr)
+				if err != nil {
+					return err
+				}
+				defer httpLis.Close()
+
+				eg.Go(func() error {
+					return srv.Serve(httpLis)
+				})
 
 				eg.Go(func() error {
 					<-ctx.Done()
@@ -212,10 +232,6 @@ func newManager() *cobra.Command {
 						return err
 					}
 					return ctx.Err()
-				})
-
-				eg.Go(func() error {
-					return srv.Serve(tls.NewListener(lis, tlsConfig))
 				})
 
 				return eg.Wait()
@@ -234,9 +250,10 @@ func newManager() *cobra.Command {
 	cmd.Flags().StringVar(&probeAddr, "probe-addr", "127.0.0.1:8082", "Probe server bind address")
 	cmd.Flags().BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager")
 
-	cmd.Flags().StringVar(&addr, "addr", ":8080", "Ingress server bind address")
+	cmd.Flags().StringVar(&httpsAddr, "https-addr", ":8443", "Ingress server https bind address")
+	cmd.Flags().StringVar(&httpAddr, "http-addr", ":8080", "Ingress server http bind address")
 	cmd.Flags().BoolVar(&reconciler.Portforward, "port-forward", false, "Portforward to Pods")
-	cmd.Flags().StringVar(&reconciler.IngressClassName, "ingress-class-name", "go.ingress.kubernetes.io", "IngressClass name")
+	cmd.Flags().StringVar(&reconciler.IngressClassName, "ingress-class-name", "go-ingress", "IngressClass name")
 	cmd.Flags().StringVar(&rawLoadBalancer, "load-balancer", "", "LoadBalancer address")
 	cmd.MarkFlagRequired("load-balancer")
 

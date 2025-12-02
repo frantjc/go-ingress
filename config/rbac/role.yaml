@@ -21,6 +21,15 @@ rules:
   verbs:
   - create
 - apiGroups:
+  - backend.ingress.frantj.cc
+  resources:
+  - proxies
+  - redirects
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - networking/v1
   resources:
   - ingressclasses
