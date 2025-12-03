@@ -62,6 +62,7 @@ func newManager() *cobra.Command {
 		slogConfig           = new(logutil.SlogConfig)
 		reconciler           = new(controller.IngressReconciler)
 		rawLoadBalancer      string
+		httpsRedirect        bool
 		cmd                  = &cobra.Command{
 			Use:           "manager",
 			Version:       SemVer(),
@@ -81,6 +82,14 @@ func newManager() *cobra.Command {
 				cfg, err := ctrl.GetConfig()
 				if err != nil {
 					return err
+				}
+
+				if !strings.Contains(rawLoadBalancer, "://") {
+					if strings.Contains(rawLoadBalancer, "/") {
+						rawLoadBalancer = "svc://" + rawLoadBalancer
+					} else {
+						rawLoadBalancer = "raw://" + rawLoadBalancer
+					}
 				}
 
 				loadBalancer, err := url.Parse(rawLoadBalancer)
@@ -141,14 +150,15 @@ func newManager() *cobra.Command {
 								Protocol: "tcp",
 							})
 						}
-						if net.ParseIP(loadBalancer.Hostname()) != nil {
+						hostname := loadBalancer.Hostname()
+						if net.ParseIP(hostname) != nil {
 							return &networkingv1.IngressLoadBalancerIngress{
-								IP:    loadBalancer.Hostname(),
+								IP:    hostname,
 								Ports: ports,
 							}, nil
 						}
 						return &networkingv1.IngressLoadBalancerIngress{
-							Hostname: loadBalancer.Hostname(),
+							Hostname: hostname,
 							Ports:    ports,
 						}, nil
 					}
@@ -188,7 +198,7 @@ func newManager() *cobra.Command {
 				defer reconciler.Close()
 
 				var (
-					srv = &http.Server{
+					httpsSrv = &http.Server{
 						ReadHeaderTimeout: time.Second * 5,
 						BaseContext: func(_ net.Listener) context.Context {
 							return ctx
@@ -200,6 +210,11 @@ func newManager() *cobra.Command {
 						GetCertificate: reconciler.GetCertificate,
 					}
 				)
+
+				for _, tlsOpt := range tlsOpts {
+					tlsOpt(tlsConfig)
+				}
+
 				eg, ctx := errgroup.WithContext(ctx)
 
 				eg.Go(func() error {
@@ -213,7 +228,15 @@ func newManager() *cobra.Command {
 				defer httpsLis.Close()
 
 				eg.Go(func() error {
-					return srv.Serve(tls.NewListener(httpsLis, tlsConfig))
+					<-ctx.Done()
+					if err = httpsSrv.Shutdown(context.WithoutCancel(ctx)); err != nil {
+						return err
+					}
+					return ctx.Err()
+				})
+
+				eg.Go(func() error {
+					return httpsSrv.Serve(tls.NewListener(httpsLis, tlsConfig))
 				})
 
 				httpLis, err := net.Listen("tcp", httpAddr)
@@ -222,16 +245,32 @@ func newManager() *cobra.Command {
 				}
 				defer httpLis.Close()
 
-				eg.Go(func() error {
-					return srv.Serve(httpLis)
-				})
+				httpSrv := httpsSrv
+				if httpsRedirect {
+					httpSrv = &http.Server{
+						ReadHeaderTimeout: time.Second * 5,
+						BaseContext: func(_ net.Listener) context.Context {
+							return ctx
+						},
+						ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelError),
+						Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							// TODO(frantjc): This only works if :443 of the same host ends up at our HTTPS listener.
+							// This will be the case most of the time, but not all of the time.
+							http.Redirect(w, r, (&url.URL{Scheme: "https", Host: r.Host, Path: r.URL.Path}).String(), http.StatusPermanentRedirect)
+						}),
+					}
+
+					eg.Go(func() error {
+						<-ctx.Done()
+						if err = httpSrv.Shutdown(context.WithoutCancel(ctx)); err != nil {
+							return err
+						}
+						return ctx.Err()
+					})
+				}
 
 				eg.Go(func() error {
-					<-ctx.Done()
-					if err = srv.Shutdown(context.WithoutCancel(ctx)); err != nil {
-						return err
-					}
-					return ctx.Err()
+					return httpSrv.Serve(httpLis)
 				})
 
 				return eg.Wait()
@@ -256,6 +295,7 @@ func newManager() *cobra.Command {
 	cmd.Flags().StringVar(&reconciler.IngressClassName, "ingress-class-name", "go-ingress", "IngressClass name")
 	cmd.Flags().StringVar(&rawLoadBalancer, "load-balancer", "", "LoadBalancer address")
 	cmd.MarkFlagRequired("load-balancer")
+	cmd.Flags().BoolVar(&httpsRedirect, "https-redirect", false, "Redirect HTTP to HTTPS")
 
 	return cmd
 }
