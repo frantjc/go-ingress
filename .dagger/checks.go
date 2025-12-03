@@ -26,3 +26,12 @@ func (m *GoIngressDev) IsGenerated(ctx context.Context) error {
 
 	return nil
 }
+
+// +check
+func (m *GoIngressDev) TestsPass(ctx context.Context) error {
+	if _, err := m.Test(ctx); err != nil {
+		return err
+	}
+
+	return nil
+}

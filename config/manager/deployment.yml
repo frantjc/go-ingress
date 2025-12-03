@@ -61,11 +61,6 @@ spec:
             - --debug
             - --load-balancer=svc://$(POD_NAMESPACE)/go-ingress
           env:
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  apiVersion: v1
-                  fieldPath: metadata.name
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:

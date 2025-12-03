@@ -41,7 +41,7 @@ type IngressReconciler struct {
 	// CLI args.
 	GetIngressLoadBalancerIngress func(ctx context.Context) (*networkingv1.IngressLoadBalancerIngress, error)
 	IngressClassName              string
-	// Portforward to a Service-selected Pods instead of using Service DNS.
+	// Portforward to a Service-selected Pod instead of using Service DNS.
 	// Useful for when running outside of the cluster we're reconciling.
 	Portforward bool
 	// Internal, only used when Portforward is true.
@@ -60,7 +60,7 @@ type IngressReconciler struct {
 // move the current state of the cluster closer to the desired state.
 func (r *IngressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var (
-		log = logutil.SloggerFrom(ctx)
+		log = slog.New(logr.ToSlogHandler(ctrl.Log)).With("action", "Reconcile")
 		ing = &networkingv1.Ingress{}
 	)
 	log.Info(req.String())
@@ -175,7 +175,7 @@ func (r *IngressReconciler) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 				}
 
 				handler := http.HandlerFunc(func(_w http.ResponseWriter, _req *http.Request) {
-					backend, err := r.handlerForBackend(logutil.SloggerInto(ctx, _log), ing.Namespace, ingPath.Backend)
+					backend, err := r.handlerForPath(logutil.SloggerInto(ctx, _log), ing.Namespace, ingPath)
 					if err != nil {
 						_log.Error(err.Error())
 						http.Error(_w, err.Error(), http.StatusInternalServerError)
@@ -191,16 +191,20 @@ func (r *IngressReconciler) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 				case networkingv1.PathTypePrefix:
 					paths = append(paths, ingress.PrefixPath(ingPath.Path, handler))
 				case networkingv1.PathTypeImplementationSpecific:
-					paths = append(paths, ingress.ExactPath(ingPath.Path, handler, ingress.WithMatchIgnoreSlash))
+					paths = append(paths, ingress.PrefixPath(ingPath.Path, handler))
 				}
 			}
 		}
 
 		if len(paths) == 0 && ing.Spec.DefaultBackend != nil {
 			_log.Debug("no rule paths matched, using default backend")
-
+			pathType := networkingv1.PathTypePrefix
 			handler := http.HandlerFunc(func(_w http.ResponseWriter, _req *http.Request) {
-				backend, err := r.handlerForBackend(logutil.SloggerInto(ctx, _log), ing.Namespace, *ing.Spec.DefaultBackend)
+				backend, err := r.handlerForPath(logutil.SloggerInto(ctx, _log), ing.Namespace, networkingv1.HTTPIngressPath{
+					Backend:  *ing.Spec.DefaultBackend,
+					Path:     "/",
+					PathType: &pathType,
+				})
 				if err != nil {
 					_log.Error(err.Error())
 					http.Error(_w, err.Error(), http.StatusInternalServerError)
@@ -281,63 +285,69 @@ func (r *IngressReconciler) SetupWithManager(mgr ctrl.Manager) (err error) {
 		Complete(r)
 }
 
-func (r *IngressReconciler) handlerForBackend(ctx context.Context, namespace string, ingressBackend networkingv1.IngressBackend) (http.Handler, error) {
-	if ingressBackend.Service != nil {
-		return r.handlerForService(ctx, namespace, *ingressBackend.Service)
+func (r *IngressReconciler) handlerForPath(ctx context.Context, namespace string, ingPath networkingv1.HTTPIngressPath) (http.Handler, error) {
+	if ingPath.Backend.Service != nil {
+		return r.handlerForService(ctx, namespace, *ingPath.Backend.Service)
 	}
 
-	if ingressBackend.Resource != nil {
-		if ingressBackend.Resource.APIGroup != nil {
-			group := *ingressBackend.Resource.APIGroup
-			switch group {
-			case "backend.ingress.frantj.cc":
-				log := logutil.SloggerFrom(ctx).With("backend", fmt.Sprintf("%s.%s", ingressBackend.Resource.Kind, group))
+	if ingPath.PathType == nil || *ingPath.PathType != networkingv1.PathTypeImplementationSpecific || ingPath.Backend.Resource == nil || ingPath.Backend.Resource.APIGroup == nil {
+		return nil, fmt.Errorf("unsupported ingress rule backend")
+	}
 
-				switch ingressBackend.Resource.Kind {
-				case "Redirect":
-					return http.HandlerFunc(func(_w http.ResponseWriter, _req *http.Request) {
-						red := &v1alpha1.Redirect{}
+	// TODO(frantjc): Support ConfigMap and Bucket backends.
+	// TODO(frantjc): Middlewares for e.g. BasicAuth?
+	group := *ingPath.Backend.Resource.APIGroup
+	switch group {
+	case "backend.ingress.frantj.cc":
+		log := logutil.SloggerFrom(ctx).With("backend", fmt.Sprintf("%s.%s", ingPath.Backend.Resource.Kind, group))
 
-						if err := r.Get(_req.Context(), client.ObjectKey{Namespace: namespace, Name: ingressBackend.Resource.Name}, red); err != nil {
-							log.Error(err.Error())
-							http.Error(_w, err.Error(), http.StatusInternalServerError)
-							return
-						}
+		switch ingPath.Backend.Resource.Kind {
+		case "Redirect":
+			handler := http.HandlerFunc(func(_w http.ResponseWriter, _req *http.Request) {
+				red := &v1alpha1.Redirect{}
 
-						u, err := url.Parse(red.Spec.URL)
-						if err != nil {
-							log.Error(err.Error())
-							http.Error(_w, err.Error(), http.StatusInternalServerError)
-							return
-						}
-
-						http.Redirect(
-							_w, _req,
-							u.String(),
-							http.StatusPermanentRedirect,
-						)
-					}), nil
-				case "Proxy":
-					return http.HandlerFunc(func(_w http.ResponseWriter, _req *http.Request) {
-						pxy := &v1alpha1.Proxy{}
-
-						if err := r.Get(_req.Context(), client.ObjectKey{Namespace: namespace, Name: ingressBackend.Resource.Name}, pxy); err != nil {
-							log.Error(err.Error())
-							http.Error(_w, err.Error(), http.StatusInternalServerError)
-							return
-						}
-
-						u, err := url.Parse(pxy.Spec.URL)
-						if err != nil {
-							log.Error(err.Error())
-							http.Error(_w, err.Error(), http.StatusInternalServerError)
-							return
-						}
-
-						httputil.NewSingleHostReverseProxy(u).ServeHTTP(_w, _req)
-					}), nil
+				if err := r.Get(_req.Context(), client.ObjectKey{Namespace: namespace, Name: ingPath.Backend.Resource.Name}, red); err != nil {
+					log.Error(err.Error())
+					http.Error(_w, err.Error(), http.StatusInternalServerError)
+					return
 				}
-			}
+
+				u, err := url.Parse(red.Spec.URL)
+				if err != nil {
+					log.Error(err.Error())
+					http.Error(_w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+
+				http.Redirect(
+					_w, _req,
+					u.JoinPath(_req.URL.Path).String(),
+					http.StatusPermanentRedirect,
+				)
+			})
+
+			return http.StripPrefix(ingPath.Path, handler), nil
+		case "Proxy":
+			handler := http.HandlerFunc(func(_w http.ResponseWriter, _req *http.Request) {
+				pxy := &v1alpha1.Proxy{}
+
+				if err := r.Get(_req.Context(), client.ObjectKey{Namespace: namespace, Name: ingPath.Backend.Resource.Name}, pxy); err != nil {
+					log.Error(err.Error())
+					http.Error(_w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+
+				u, err := url.Parse(pxy.Spec.URL)
+				if err != nil {
+					log.Error(err.Error())
+					http.Error(_w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+
+				httputil.NewSingleHostReverseProxy(u.JoinPath(_req.URL.Path)).ServeHTTP(_w, _req)
+			})
+
+			return http.StripPrefix(ingPath.Path, handler), nil
 		}
 	}
 

@@ -105,20 +105,33 @@ func (m *GoIngressDev) Container(ctx context.Context) *dagger.Container {
 func (m *GoIngressDev) Version(ctx context.Context) string {
 	version := "v0.0.0-unknown"
 
-	ref, err := m.Source.AsGit().LatestVersion().Ref(ctx)
-	if err == nil {
+	gitRef := m.Source.AsGit().LatestVersion()
+
+	if ref, err := gitRef.Ref(ctx); err == nil {
 		version = strings.TrimPrefix(ref, "refs/tags/")
 	}
 
+	if latestVersionCommit, err := gitRef.Commit(ctx); err == nil {
+		if headCommit, err := m.Source.AsGit().Head().Commit(ctx); err == nil {
+			if headCommit != latestVersionCommit {
+				if len(headCommit) > 7 {
+					headCommit = headCommit[:7]
+				}
+				version += "-" + headCommit
+			}
+		}
+	}
+
 	if empty, _ := m.Source.AsGit().Uncommitted().IsEmpty(ctx); !empty {
-		version += "*"
+		version += "+dirty"
 	}
 
 	return version
 }
 
 func (m *GoIngressDev) Tag(ctx context.Context) string {
-	return strings.TrimSuffix(strings.TrimPrefix(m.Version(ctx), "v"), "*")
+	before, _, _ := strings.Cut(strings.TrimPrefix(m.Version(ctx), "v"), "+")
+	return before
 }
 
 func (m *GoIngressDev) Binary(ctx context.Context) *dagger.File {
@@ -131,4 +144,57 @@ func (m *GoIngressDev) Binary(ctx context.Context) *dagger.File {
 			Pkg:     "./cmd/manager",
 			Ldflags: "-s -w -X main.version=" + m.Version(ctx),
 		})
+}
+
+func (m *GoIngressDev) Test(ctx context.Context) (string, error) {
+	return dag.Go(dagger.GoOpts{
+		Module: m.Source.Filter(dagger.DirectoryFilterOpts{
+			Exclude: []string{
+				".dagger/",
+			},
+		}),
+	}).
+		Test(dagger.GoTestOpts{Pkg: "./..."}).
+		CombinedOutput(ctx)
+}
+
+func (m *GoIngressDev) Vulncheck(ctx context.Context) (string, error) {
+	return dag.Go(dagger.GoOpts{
+		Module: m.Source.Filter(dagger.DirectoryFilterOpts{
+			Exclude: []string{
+				".dagger/",
+			},
+		}),
+	}).
+		Container().
+		WithExec([]string{"go", "install", "golang.org/x/vuln/cmd/govulncheck@v1.1.4"}).
+		WithExec([]string{"govulncheck", "./..."}).
+		CombinedOutput(ctx)
+}
+
+func (m *GoIngressDev) Vet(ctx context.Context) (string, error) {
+	return dag.Go(dagger.GoOpts{
+		Module: m.Source.Filter(dagger.DirectoryFilterOpts{
+			Exclude: []string{
+				".dagger/",
+			},
+		}),
+	}).
+		Container().
+		WithExec([]string{"go", "vet", "./..."}).
+		CombinedOutput(ctx)
+}
+
+func (m *GoIngressDev) Staticcheck(ctx context.Context) (string, error) {
+	return dag.Go(dagger.GoOpts{
+		Module: m.Source.Filter(dagger.DirectoryFilterOpts{
+			Exclude: []string{
+				".dagger/",
+			},
+		}),
+	}).
+		Container().
+		WithExec([]string{"go", "install", "honnef.co/go/tools/cmd/staticcheck@v0.6.1"}).
+		WithExec([]string{"staticcheck", "./..."}).
+		CombinedOutput(ctx)
 }

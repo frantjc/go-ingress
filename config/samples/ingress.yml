@@ -2,10 +2,18 @@
 apiVersion: backend.ingress.frantj.cc/v1alpha1
 kind: Redirect
 metadata:
-  name: google
+  name: go-ingress
   namespace: default
 spec:
-  url: https://google.com/
+  url: https://github.com/frantjc/go-ingress
+---
+apiVersion: backend.ingress.frantj.cc/v1alpha1
+kind: Proxy
+metadata:
+  name: go-ingress
+  namespace: default
+spec:
+  url: https://github.com/frantjc/go-ingress
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -15,13 +23,20 @@ metadata:
 spec:
   ingressClassName: go-ingress
   rules:
-    - host: ingress.frantj.cc
+    - host: example.com
       http:
         paths:
-        - backend:
-            resource:
-              apiGroup: backend.ingress.frantj.cc
-              kind: Redirect
-              name: google
-          path: /
-          pathType: Prefix
+          - backend:
+              resource:
+                apiGroup: backend.ingress.frantj.cc
+                kind: Redirect
+                name: go-ingress
+            path: /redirect
+            pathType: ImplementationSpecific
+          - backend:
+              resource:
+                apiGroup: backend.ingress.frantj.cc
+                kind: Proxy
+                name: go-ingress
+            path: /proxy
+            pathType: ImplementationSpecific

@@ -8,7 +8,7 @@ run: build
 	if [ -z "$$LB" ]; then \
 		LB=127.0.0.1; \
 	fi; \
-	manager --debug --load-balancer=$$LB --port-forward
+	manager --debug --load-balancer=$$LB --port-forward --https-redirect
 
 .PHONY: .git/hooks .git/hooks/ .git/hooks/pre-commit
 .git/hooks .git/hooks/ .git/hooks/pre-commit:
