@@ -78,12 +78,23 @@ func (r *IngressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	if ing.Spec.IngressClassName == nil {
+	if ing.Spec.IngressClassName != nil {
+		if *ing.Spec.IngressClassName != r.IngressClassName {
+			return ctrl.Result{}, nil
+		}
+	} else {
 		if ing.Annotations != nil {
 			if ingClassName, ok := ing.Annotations["kubernetes.io/ingress.class"]; ok {
 				if ingClassName != r.IngressClassName {
 					return ctrl.Result{}, nil
 				}
+
+				ing.Spec.IngressClassName = &ingClassName
+				if err := r.Update(ctx, ing); err != nil {
+					return ctrl.Result{}, err
+				}
+
+				return ctrl.Result{}, nil
 			}
 		}
 
@@ -108,7 +119,7 @@ func (r *IngressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if err := r.Update(ctx, ing); err != nil {
 			return ctrl.Result{}, err
 		}
-	} else if *ing.Spec.IngressClassName != r.IngressClassName {
+
 		return ctrl.Result{}, nil
 	}
 
@@ -443,9 +454,10 @@ func (r *IngressReconciler) handlerForPortforward(ctx context.Context, namespace
 				return nil
 			}
 		}
+		orig := r.close
 		r.close = func() error {
-			defer close(stopC)
-			return r.close()
+			close(stopC)
+			return orig()
 		}
 		log.Debug("portforwarding")
 
@@ -466,9 +478,10 @@ func (r *IngressReconciler) handlerForPortforward(ctx context.Context, namespace
 		if err != nil {
 			return nil, err
 		}
+		orig = r.close
 		r.close = func() error {
-			defer portforwarder.Close()
-			return r.close()
+			portforwarder.Close()
+			return orig()
 		}
 
 		go func() {
