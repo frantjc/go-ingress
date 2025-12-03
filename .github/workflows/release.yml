@@ -17,8 +17,8 @@ jobs:
         with:
           repository: dagger/dagger
           version: v0.19.7
-      - run: |
-          dagger <<EOF
+      - shell: dagger
+        run: |
           withGhcrAuth() {
             $1 | withRegistryAuth ghcr.io ${{ github.actor }} env://GITHUB_TOKEN
           }
@@ -27,4 +27,3 @@ jobs:
           $container | publish ghcr.io/${{ github.repository }} &
           $container | publish ghcr.io/${{ github.repository }}:$tag
           .wait
-          EOF
