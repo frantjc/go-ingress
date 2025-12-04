@@ -439,7 +439,7 @@ func (r *IngressReconciler) handlerForPath(ctx context.Context, namespace string
 				forwardHandler.ServeHTTP(_w, _req)
 			})
 
-			return handler, nil
+			return http.StripPrefix(ingPath.Path, handler), nil
 		}
 	}
 
