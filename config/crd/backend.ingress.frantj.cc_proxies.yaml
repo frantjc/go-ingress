@@ -14,11 +14,7 @@ spec:
     singular: proxy
   scope: Namespaced
   versions:
-  - additionalPrinterColumns:
-    - jsonPath: .status.phase
-      name: Phase
-      type: string
-    name: v1alpha1
+  - name: v1alpha1
     schema:
       openAPIV3Schema:
         description: Proxy is the Schema for the proxies API.

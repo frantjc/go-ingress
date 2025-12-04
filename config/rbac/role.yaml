@@ -23,6 +23,7 @@ rules:
 - apiGroups:
   - backend.ingress.frantj.cc
   resources:
+  - basicauths
   - proxies
   - redirects
   verbs:

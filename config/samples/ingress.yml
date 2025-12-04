@@ -15,6 +15,32 @@ metadata:
 spec:
   url: https://github.com/frantjc/go-ingress
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: go-ingress
+  namespace: default
+stringData:
+  # admin:admin
+  auth: admin:$2y$05$WNoMeWwxP3iIeBZZ7ff1s.p27hlQNbn9kUiLkHoIoFp3opkyWzhr6
+---
+apiVersion: backend.ingress.frantj.cc/v1alpha1
+kind: BasicAuth
+metadata:
+  name: go-ingress
+  namespace: default
+spec:
+  secretKeyRef:
+    name: go-ingress
+    key: auth
+  path: /
+  pathType: ImplementationSpecific
+  backend:
+    resource:
+      apiGroup: backend.ingress.frantj.cc
+      kind: Redirect
+      name: go-ingress
+---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -23,7 +49,7 @@ metadata:
 spec:
   ingressClassName: go-ingress
   rules:
-    - host: example.com
+    - host: go-ingress.frantj.cc
       http:
         paths:
           - backend:
@@ -39,4 +65,11 @@ spec:
                 kind: Proxy
                 name: go-ingress
             path: /proxy
+            pathType: ImplementationSpecific
+          - backend:
+              resource:
+                apiGroup: backend.ingress.frantj.cc
+                kind: BasicAuth
+                name: go-ingress
+            path: /basicauth
             pathType: ImplementationSpecific

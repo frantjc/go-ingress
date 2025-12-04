@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/frantjc/go-ingress"
@@ -18,6 +20,7 @@ import (
 	xio "github.com/frantjc/x/io"
 	xslices "github.com/frantjc/x/slices"
 	"github.com/go-logr/logr"
+	"golang.org/x/crypto/bcrypt"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -54,7 +57,7 @@ type IngressReconciler struct {
 // +kubebuilder:rbac:groups=networking/v1,resources=ingresses/status,verbs=update
 // +kubebuilder:rbac:groups="",resources=pods;secrets;services,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods/portforwards,verbs=create
-// +kubebuilder:rbac:groups=backend.ingress.frantj.cc,resources=proxies;redirects,verbs=get;list;watch
+// +kubebuilder:rbac:groups=backend.ingress.frantj.cc,resources=basicauths;proxies;redirects,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -295,7 +298,6 @@ func (r *IngressReconciler) handlerForPath(ctx context.Context, namespace string
 	}
 
 	// TODO(frantjc): Support ConfigMap and Bucket backends.
-	// TODO(frantjc): Middlewares for e.g. BasicAuth?
 	group := *ingPath.Backend.Resource.APIGroup
 	switch group {
 	case "backend.ingress.frantj.cc":
@@ -348,6 +350,96 @@ func (r *IngressReconciler) handlerForPath(ctx context.Context, namespace string
 			})
 
 			return http.StripPrefix(ingPath.Path, handler), nil
+		case "BasicAuth":
+			handler := http.HandlerFunc(func(_w http.ResponseWriter, _req *http.Request) {
+				ba := &v1alpha1.BasicAuth{}
+
+				if err := r.Get(_req.Context(), client.ObjectKey{Namespace: namespace, Name: ingPath.Backend.Resource.Name}, ba); err != nil {
+					log.Error(err.Error())
+					http.Error(_w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+
+				secRef := ba.Spec.SecretKeyRef
+				if secRef.Name == "" || secRef.Key == "" {
+					log.Error("invalid SecretKeyRef in BasicAuth")
+					http.Error(_w, "invalid basic auth secret reference", http.StatusInternalServerError)
+					return
+				}
+
+				sec := &corev1.Secret{}
+				if err := r.Get(_req.Context(), client.ObjectKey{Namespace: namespace, Name: secRef.Name}, sec); err != nil {
+					log.Error(err.Error())
+					http.Error(_w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+
+				raw, ok := sec.Data[secRef.Key]
+				if !ok {
+					log.Error("secret key not found")
+					http.Error(_w, "basic auth secret key not found", http.StatusInternalServerError)
+					return
+				}
+
+				creds := map[string]string{}
+				for _, line := range strings.Split(string(raw), "\n") {
+					line = strings.TrimSpace(line)
+					if line == "" {
+						continue
+					}
+					user, pass, ok := strings.Cut(line, ":")
+					if !ok {
+						continue
+					}
+					creds[user] = pass
+				}
+
+				auth := _req.Header.Get("Authorization")
+				if auth == "" || !strings.HasPrefix(auth, "Basic ") {
+					_w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Basic realm="%s"`, ba.Name))
+					http.Error(_w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+
+				b64 := strings.TrimPrefix(auth, "Basic ")
+				decoded, err := base64.StdEncoding.DecodeString(b64)
+				if err != nil {
+					_w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Basic realm="%s"`, ba.Name))
+					http.Error(_w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+
+				user, pass, ok := strings.Cut(string(decoded), ":")
+				if !ok {
+					_w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Basic realm="%s"`, ba.Name))
+					http.Error(_w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+
+				hash, ok := creds[user]
+				if !ok {
+					_w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Basic realm="%s"`, ba.Name))
+					http.Error(_w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+
+				if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(pass)); err != nil {
+					_w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Basic realm="%s"`, ba.Name))
+					http.Error(_w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+
+				forwardHandler, err := r.handlerForPath(logutil.SloggerInto(_req.Context(), log), namespace, ba.Spec.HTTPIngressPath)
+				if err != nil {
+					log.Error(err.Error())
+					http.Error(_w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+
+				forwardHandler.ServeHTTP(_w, _req)
+			})
+
+			return handler, nil
 		}
 	}
 

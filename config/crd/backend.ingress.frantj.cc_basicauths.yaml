@@ -1,0 +1,162 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: basicauths.backend.ingress.frantj.cc
+spec:
+  group: backend.ingress.frantj.cc
+  names:
+    kind: BasicAuth
+    listKind: BasicAuthList
+    plural: basicauths
+    singular: basicauth
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: BasicAuth is the Schema for the basicauths API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: BasicAuthSpec defines the desired state of BasicAuth.
+            properties:
+              backend:
+                description: |-
+                  backend defines the referenced service endpoint to which the traffic
+                  will be forwarded to.
+                properties:
+                  resource:
+                    description: |-
+                      resource is an ObjectRef to another Kubernetes resource in the namespace
+                      of the Ingress object. If resource is specified, a service.Name and
+                      service.Port must not be specified.
+                      This is a mutually exclusive setting with "Service".
+                    properties:
+                      apiGroup:
+                        description: |-
+                          APIGroup is the group for the resource being referenced.
+                          If APIGroup is not specified, the specified Kind must be in the core API group.
+                          For any other third-party types, APIGroup is required.
+                        type: string
+                      kind:
+                        description: Kind is the type of resource being referenced
+                        type: string
+                      name:
+                        description: Name is the name of resource being referenced
+                        type: string
+                    required:
+                    - kind
+                    - name
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  service:
+                    description: |-
+                      service references a service as a backend.
+                      This is a mutually exclusive setting with "Resource".
+                    properties:
+                      name:
+                        description: |-
+                          name is the referenced service. The service must exist in
+                          the same namespace as the Ingress object.
+                        type: string
+                      port:
+                        description: |-
+                          port of the referenced service. A port name or port number
+                          is required for a IngressServiceBackend.
+                        properties:
+                          name:
+                            description: |-
+                              name is the name of the port on the Service.
+                              This is a mutually exclusive setting with "Number".
+                            type: string
+                          number:
+                            description: |-
+                              number is the numerical port number (e.g. 80) on the Service.
+                              This is a mutually exclusive setting with "Name".
+                            format: int32
+                            type: integer
+                        type: object
+                        x-kubernetes-map-type: atomic
+                    required:
+                    - name
+                    type: object
+                type: object
+              path:
+                description: |-
+                  path is matched against the path of an incoming request. Currently it can
+                  contain characters disallowed from the conventional "path" part of a URL
+                  as defined by RFC 3986. Paths must begin with a '/' and must be present
+                  when using PathType with value "Exact" or "Prefix".
+                type: string
+              pathType:
+                description: |-
+                  pathType determines the interpretation of the path matching. PathType can
+                  be one of the following values:
+                  * Exact: Matches the URL path exactly.
+                  * Prefix: Matches based on a URL path prefix split by '/'. Matching is
+                    done on a path element by element basis. A path element refers is the
+                    list of labels in the path split by the '/' separator. A request is a
+                    match for path p if every p is an element-wise prefix of p of the
+                    request path. Note that if the last element of the path is a substring
+                    of the last element in request path, it is not a match (e.g. /foo/bar
+                    matches /foo/bar/baz, but does not match /foo/barbaz).
+                  * ImplementationSpecific: Interpretation of the Path matching is up to
+                    the IngressClass. Implementations can treat this as a separate PathType
+                    or treat it identically to Prefix or Exact path types.
+                  Implementations are required to support all path types.
+                type: string
+              secretKeyRef:
+                description: SecretKeySelector selects a key of a Secret.
+                properties:
+                  key:
+                    description: The key of the secret to select from.  Must be a
+                      valid secret key.
+                    type: string
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                  optional:
+                    description: Specify whether the Secret or its key must be defined
+                    type: boolean
+                required:
+                - key
+                type: object
+                x-kubernetes-map-type: atomic
+            required:
+            - backend
+            - pathType
+            - secretKeyRef
+            type: object
+          status:
+            description: BasicAuthStatus defines the observed state of BasicAuth.
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -1,6 +1,8 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -15,7 +17,6 @@ type ProxyStatus struct{}
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 
 // Proxy is the Schema for the proxies API.
 type Proxy struct {
@@ -46,7 +47,6 @@ type RedirectStatus struct{}
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 
 // Redirect is the Schema for the redirects API.
 type Redirect struct {
@@ -66,6 +66,37 @@ type RedirectList struct {
 	Items           []Redirect `json:"items"`
 }
 
+// BasicAuthSpec defines the desired state of BasicAuth.
+type BasicAuthSpec struct {
+	// +kubebuilder:validation:Required
+	SecretKeyRef                 corev1.SecretKeySelector `json:"secretKeyRef"`
+	networkingv1.HTTPIngressPath `json:",inline"`
+}
+
+// BasicAuthStatus defines the observed state of BasicAuth.
+type BasicAuthStatus struct{}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+
+// BasicAuth is the Schema for the basicauths API.
+type BasicAuth struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   BasicAuthSpec   `json:"spec,omitempty"`
+	Status BasicAuthStatus `json:"status,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+
+// BasicAuthList contains a list of BasicAuth.
+type BasicAuthList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []BasicAuth `json:"items"`
+}
+
 func init() {
-	SchemeBuilder.Register(&Proxy{}, &ProxyList{}, &Redirect{}, &RedirectList{})
+	SchemeBuilder.Register(&Proxy{}, &ProxyList{}, &Redirect{}, &RedirectList{}, &BasicAuth{}, &BasicAuthList{})
 }
