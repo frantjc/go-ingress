@@ -18,6 +18,8 @@ jobs:
           repository: dagger/dagger
           version: v0.19.7
       - shell: dagger {0}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           withGhcrAuth() {
             $1 | withRegistryAuth ghcr.io ${{ github.actor }} env://GITHUB_TOKEN
