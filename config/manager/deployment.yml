@@ -60,12 +60,19 @@ spec:
         - args:
             - --debug
             - --load-balancer=svc://$(POD_NAMESPACE)/go-ingress
+            - --https-redirect
+            - --probe-addr=$(POD_IP):8082
           env:
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: status.podIP
           image: ghcr.io/frantjc/go-ingress:0.4.0
           imagePullPolicy: IfNotPresent
           name: manager
@@ -82,14 +89,14 @@ spec:
             - containerPort: 8443
               name: https
               protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8082
+              scheme: HTTP
           readinessProbe:
             httpGet:
               path: /readyz
-              port: 8082
-              scheme: HTTP
-          healthProbe:
-            httpGet:
-              path: /healthz
               port: 8082
               scheme: HTTP
           livenessProbe:
