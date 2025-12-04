@@ -154,7 +154,8 @@ func (m *GoIngressDev) Test(ctx context.Context) (string, error) {
 			},
 		}),
 	}).
-		Test(dagger.GoTestOpts{Pkg: "./..."}).
+		Container().
+		WithExec([]string{"go", "test", "./..."}).
 		CombinedOutput(ctx)
 }
 
