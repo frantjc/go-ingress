@@ -322,7 +322,7 @@ func (r *IngressReconciler) handlerForPath(ctx context.Context, namespace string
 				http.Redirect(
 					_w, _req,
 					u.JoinPath(_req.URL.Path).String(),
-					http.StatusPermanentRedirect,
+					http.StatusMovedPermanently,
 				)
 			})
 

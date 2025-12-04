@@ -256,7 +256,7 @@ func newManager() *cobra.Command {
 						Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 							// TODO(frantjc): This only works if :443 of the same host ends up at our HTTPS listener.
 							// This will be the case most of the time, but not all of the time.
-							http.Redirect(w, r, (&url.URL{Scheme: "https", Host: r.Host, Path: r.URL.Path}).String(), http.StatusPermanentRedirect)
+							http.Redirect(w, r, (&url.URL{Scheme: "https", Host: r.Host, Path: r.URL.Path}).String(), http.StatusMovedPermanently)
 						}),
 					}
 
