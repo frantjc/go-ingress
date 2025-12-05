@@ -34,7 +34,6 @@ rules:
   - networking/v1
   resources:
   - ingressclasses
-  - ingresses
   verbs:
   - get
   - list
@@ -42,7 +41,15 @@ rules:
 - apiGroups:
   - networking/v1
   resources:
-  - ingresses/finalizers
+  - ingresses
+  verbs:
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - networking/v1
+  resources:
   - ingresses/status
   verbs:
   - update

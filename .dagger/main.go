@@ -73,7 +73,7 @@ func (m *GoIngressDev) Generate(ctx context.Context) *dagger.Changeset {
 			"webhook",
 			// generate api/**/zz_generated.deepcopy.go for types in api/**.
 			"object",
-			// generate ClusterRole for controllers in internal/controller/** and cmd/manager/** and put it in config/rbac (default location).
+			// generate ClusterRole for controllers in internal/** and cmd/** and put it in config/rbac (default location).
 			"rbac:roleName=go-ingress", "paths=./cmd/...", "paths=./internal/...",
 		}).
 		Directory(".").
@@ -198,4 +198,37 @@ func (m *GoIngressDev) Staticcheck(ctx context.Context) (string, error) {
 		WithExec([]string{"go", "install", "honnef.co/go/tools/cmd/staticcheck@v0.6.1"}).
 		WithExec([]string{"staticcheck", "./..."}).
 		CombinedOutput(ctx)
+}
+
+func (m *GoIngressDev) Coder(ctx context.Context) (*dagger.LLM, error) {
+	gopls := dag.Go(dagger.GoOpts{Module: m.Source}).
+		Container().
+		WithExec([]string{"go", "install", "golang.org/x/tools/gopls@v0.20.0"})
+
+	instructions, err := gopls.WithExec([]string{"gopls", "mcp", "-instructions"}).Stdout(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return dag.Doug().
+		Agent(
+			dag.LLM().
+				WithEnv(
+					dag.Env().
+						// WithCurrentModule().
+						WithWorkspace(m.Source.Filter(dagger.DirectoryFilterOpts{
+							Exclude: []string{".dagger/", ".github/"},
+						})),
+				).
+				// WithBlockedFunction("GoIngressDev", "container").
+				// WithBlockedFunction("GoIngressDev", "tag").
+				// WithBlockedFunction("GoIngressDev", "version").
+				WithSystemPrompt(instructions).
+				WithMCPServer(
+					"gopls",
+					gopls.AsService(dagger.ContainerAsServiceOpts{
+						Args: []string{"gopls", "mcp"},
+					}),
+				),
+		), nil
 }

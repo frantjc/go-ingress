@@ -58,9 +58,10 @@ func newManager() *cobra.Command {
 		httpsAddr            string
 		metricsAddr          string
 		probeAddr            string
+		webhookAddr          string
 		enableLeaderElection bool
 		slogConfig           = new(logutil.SlogConfig)
-		reconciler           = new(controller.IngressReconciler)
+		ingressController    = new(controller.IngressController)
 		rawLoadBalancer      string
 		httpsRedirect        bool
 		cmd                  = &cobra.Command{
@@ -84,15 +85,12 @@ func newManager() *cobra.Command {
 					return err
 				}
 
-				if !strings.Contains(rawLoadBalancer, "://") {
-					if strings.Contains(rawLoadBalancer, "/") {
-						rawLoadBalancer = "svc://" + rawLoadBalancer
-					} else {
-						rawLoadBalancer = "raw://" + rawLoadBalancer
-					}
+				webhookHost, rawWebhookPort, err := net.SplitHostPort(webhookAddr)
+				if err != nil {
+					return err
 				}
 
-				loadBalancer, err := url.Parse(rawLoadBalancer)
+				webhookPort, err := strconv.Atoi(rawWebhookPort)
 				if err != nil {
 					return err
 				}
@@ -104,6 +102,8 @@ func newManager() *cobra.Command {
 						},
 					}
 					webhookServer = webhook.NewServer(webhook.Options{
+						Host:    webhookHost,
+						Port:    webhookPort,
 						TLSOpts: tlsOpts,
 					})
 					metricsServerOptions = server.Options{
@@ -140,9 +140,22 @@ func newManager() *cobra.Command {
 					return err
 				}
 
+				if !strings.Contains(rawLoadBalancer, "://") {
+					if strings.Contains(rawLoadBalancer, "/") {
+						rawLoadBalancer = "svc://" + rawLoadBalancer
+					} else {
+						rawLoadBalancer = "raw://" + rawLoadBalancer
+					}
+				}
+
+				loadBalancer, err := url.Parse(rawLoadBalancer)
+				if err != nil {
+					return err
+				}
+
 				switch loadBalancer.Scheme {
 				case "raw", "":
-					reconciler.GetIngressLoadBalancerIngress = func(_ context.Context) (*networkingv1.IngressLoadBalancerIngress, error) {
+					ingressController.GetIngressLoadBalancerIngress = func(_ context.Context) (*networkingv1.IngressLoadBalancerIngress, error) {
 						ports := []networkingv1.IngressPortStatus{}
 						if port, err := strconv.Atoi(loadBalancer.Port()); err == nil {
 							ports = append(ports, networkingv1.IngressPortStatus{
@@ -163,7 +176,7 @@ func newManager() *cobra.Command {
 						}, nil
 					}
 				case "service", "svc":
-					reconciler.GetIngressLoadBalancerIngress = func(ctx context.Context) (*networkingv1.IngressLoadBalancerIngress, error) {
+					ingressController.GetIngressLoadBalancerIngress = func(ctx context.Context) (*networkingv1.IngressLoadBalancerIngress, error) {
 						svc := &corev1.Service{}
 
 						if err := mgr.GetClient().Get(ctx, client.ObjectKey{Namespace: loadBalancer.Host, Name: strings.TrimPrefix(loadBalancer.Path, "/")}, svc); err != nil {
@@ -192,10 +205,22 @@ func newManager() *cobra.Command {
 					return err
 				}
 
-				if err := reconciler.SetupWithManager(mgr); err != nil {
+				if new(controller.BasicAuthController).SetupWithManager(mgr); err != nil {
 					return err
 				}
-				defer reconciler.Close()
+
+				if new(controller.ProxyController).SetupWithManager(mgr); err != nil {
+					return err
+				}
+
+				if new(controller.RedirectController).SetupWithManager(mgr); err != nil {
+					return err
+				}
+
+				if err := ingressController.SetupWithManager(mgr); err != nil {
+					return err
+				}
+				defer ingressController.Close()
 
 				var (
 					httpsSrv = &http.Server{
@@ -204,10 +229,10 @@ func newManager() *cobra.Command {
 							return ctx
 						},
 						ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelError),
-						Handler:  reconciler,
+						Handler:  ingressController,
 					}
 					tlsConfig = &tls.Config{
-						GetCertificate: reconciler.GetCertificate,
+						GetCertificate: ingressController.GetCertificate,
 					}
 				)
 
@@ -254,7 +279,7 @@ func newManager() *cobra.Command {
 						},
 						ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelError),
 						Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-							// TODO(frantjc): This only works if :443 of the same host ends up at our HTTPS listener.
+							// FIXME(frantjc): This only works if :443 of the same host ends up at our HTTPS listener.
 							// This will be the case most of the time, but not all of the time.
 							http.Redirect(w, r, (&url.URL{Scheme: "https", Host: r.Host, Path: r.URL.Path}).String(), http.StatusMovedPermanently)
 						}),
@@ -281,20 +306,21 @@ func newManager() *cobra.Command {
 	cmd.Flags().BoolP("help", "h", false, "Help for "+cmd.Name())
 	cmd.Flags().Bool("version", false, "Version for "+cmd.Name())
 	cmd.SetVersionTemplate("{{ .Name }}{{ .Version }}")
+
 	slogConfig.AddFlags(cmd.Flags())
 
 	// Allow the --kubeconfig flag, which is consumed by sigs.k8s.io/controller-runtime when we call ctrl.GetConfig().
 	cmd.Flags().AddGoFlagSet(flag.CommandLine)
 	cmd.Flags().StringVar(&metricsAddr, "metrics-addr", "127.0.0.1:8081", "Metrics server bind address")
 	cmd.Flags().StringVar(&probeAddr, "probe-addr", "127.0.0.1:8082", "Probe server bind address")
+	cmd.Flags().StringVar(&webhookAddr, "webhook-addr", ":9443", "Webhook server bind address")
 	cmd.Flags().BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager")
 
 	cmd.Flags().StringVar(&httpsAddr, "https-addr", ":8443", "Ingress server https bind address")
 	cmd.Flags().StringVar(&httpAddr, "http-addr", ":8080", "Ingress server http bind address")
-	cmd.Flags().BoolVar(&reconciler.Portforward, "port-forward", false, "Portforward to Pods")
-	cmd.Flags().StringVar(&reconciler.IngressClassName, "ingress-class-name", "go-ingress", "IngressClass name")
-	cmd.Flags().StringVar(&rawLoadBalancer, "load-balancer", "", "LoadBalancer address")
-	cmd.MarkFlagRequired("load-balancer")
+	cmd.Flags().BoolVar(&ingressController.Portforward, "port-forward", false, "Portforward to Pods")
+	cmd.Flags().StringVar(&ingressController.IngressClassName, "ingress-class-name", "go-ingress", "IngressClass name")
+	cmd.Flags().StringVar(&rawLoadBalancer, "load-balancer", "127.0.0.1", "LoadBalancer address")
 	cmd.Flags().BoolVar(&httpsRedirect, "https-redirect", false, "Redirect HTTP to HTTPS")
 
 	return cmd

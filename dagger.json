@@ -6,6 +6,11 @@
   },
   "dependencies": [
     {
+      "name": "doug",
+      "source": "github.com/vito/daggerverse/doug@main",
+      "pin": "edeeba6b73f8873c07d30471cd1d95ad678a1581"
+    },
+    {
       "name": "go",
       "source": "github.com/frantjc/daggerverse/go@main",
       "pin": "e7d1f330e3497014ed5302950598c07783a36fb9"

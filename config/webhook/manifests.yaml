@@ -1,0 +1,86 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: ingress.frantj.cc
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: go-ingress
+      namespace: go-ingress
+      path: /validate-backend-ingress-frantj-cc-v1alpha1-basicauth
+  failurePolicy: Fail
+  name: basicauth.backend.ingress.frantj.cc
+  rules:
+  - apiGroups:
+    - backend.ingress.frantj.cc
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - basicauth
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: go-ingress
+      namespace: go-ingress
+      path: /validate-networking-v1-ingress
+  failurePolicy: Fail
+  name: ingress.frantj.cc
+  rules:
+  - apiGroups:
+    - networking
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - ingress
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: go-ingress
+      namespace: go-ingress
+      path: /validate-backend-ingress-frantj-cc-v1alpha1-proxy
+  failurePolicy: Fail
+  name: proxy.backend.ingress.frantj.cc
+  rules:
+  - apiGroups:
+    - backend.ingress.frantj.cc
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - proxy
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: go-ingress
+      namespace: go-ingress
+      path: /validate-backend-ingress-frantj-cc-v1alpha1-redirect
+  failurePolicy: Fail
+  name: redirect.backend.ingress.frantj.cc
+  rules:
+  - apiGroups:
+    - backend.ingress.frantj.cc
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - redirect
+  sideEffects: None
