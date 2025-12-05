@@ -137,7 +137,11 @@ func (m *GoIngressDev) Tag(ctx context.Context) string {
 func (m *GoIngressDev) Binary(ctx context.Context) *dagger.File {
 	return dag.Go(dagger.GoOpts{
 		Module: m.Source.Filter(dagger.DirectoryFilterOpts{
-			Exclude: []string{".github/"},
+			Exclude: []string{
+				".dagger/",
+				".githooks/",
+				".github/",
+			},
 		}),
 	}).
 		Build(dagger.GoBuildOpts{
@@ -151,11 +155,13 @@ func (m *GoIngressDev) Test(ctx context.Context) (string, error) {
 		Module: m.Source.Filter(dagger.DirectoryFilterOpts{
 			Exclude: []string{
 				".dagger/",
+				".githooks/",
+				".github/",
 			},
 		}),
 	}).
 		Container().
-		WithExec([]string{"go", "test", "./..."}).
+		WithExec([]string{"go", "test", "-cover", "-race", "./..."}).
 		CombinedOutput(ctx)
 }
 
@@ -164,6 +170,8 @@ func (m *GoIngressDev) Vulncheck(ctx context.Context) (string, error) {
 		Module: m.Source.Filter(dagger.DirectoryFilterOpts{
 			Exclude: []string{
 				".dagger/",
+				".githooks/",
+				".github/",
 			},
 		}),
 	}).
@@ -178,6 +186,8 @@ func (m *GoIngressDev) Vet(ctx context.Context) (string, error) {
 		Module: m.Source.Filter(dagger.DirectoryFilterOpts{
 			Exclude: []string{
 				".dagger/",
+				".githooks/",
+				".github/",
 			},
 		}),
 	}).
@@ -191,6 +201,8 @@ func (m *GoIngressDev) Staticcheck(ctx context.Context) (string, error) {
 		Module: m.Source.Filter(dagger.DirectoryFilterOpts{
 			Exclude: []string{
 				".dagger/",
+				".githooks/",
+				".github/",
 			},
 		}),
 	}).
@@ -201,7 +213,15 @@ func (m *GoIngressDev) Staticcheck(ctx context.Context) (string, error) {
 }
 
 func (m *GoIngressDev) Coder(ctx context.Context) (*dagger.LLM, error) {
-	gopls := dag.Go(dagger.GoOpts{Module: m.Source}).
+	gopls := dag.Go(dagger.GoOpts{
+		Module: m.Source.Filter(dagger.DirectoryFilterOpts{
+			Exclude: []string{
+				".dagger/",
+				".githooks/",
+				".github/",
+			},
+		}),
+	}).
 		Container().
 		WithExec([]string{"go", "install", "golang.org/x/tools/gopls@v0.20.0"})
 
@@ -216,9 +236,15 @@ func (m *GoIngressDev) Coder(ctx context.Context) (*dagger.LLM, error) {
 				WithEnv(
 					dag.Env().
 						// WithCurrentModule().
-						WithWorkspace(m.Source.Filter(dagger.DirectoryFilterOpts{
-							Exclude: []string{".dagger/", ".github/"},
-						})),
+						WithWorkspace(
+							m.Source.Filter(dagger.DirectoryFilterOpts{
+								Exclude: []string{
+									".dagger/",
+									".githooks/",
+									".github/",
+								},
+							}),
+						),
 				).
 				// WithBlockedFunction("GoIngressDev", "container").
 				// WithBlockedFunction("GoIngressDev", "tag").

@@ -1,15 +1,8 @@
 package controller_test
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
-	"math/big"
 	"testing"
-	"time"
 
 	"github.com/frantjc/go-ingress/internal/controller"
 	"github.com/stretchr/testify/assert"
@@ -19,33 +12,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func generateTLSKeyPair(cn string) ([]byte, []byte, error) {
-	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return nil, nil, err
-	}
-	tpl := x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: cn},
-		NotBefore:    time.Now(),
-		NotAfter:     time.Now().Add(24 * time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, &tpl, &tpl, &privKey.PublicKey, privKey)
-	if err != nil {
-		return nil, nil, err
-	}
-	crt := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	key := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privKey)})
-	return crt, key, nil
-}
-
 func FuzzIngressController_GetCertificate_SuccessfulLookup(f *testing.F) {
 	f.Add("kube-system", "test-tls", "test", "example.com")
+	f.Add("go-ingress", "frantjc-tls", "frantjc", "frantj.cc")
 	f.Fuzz(func(t *testing.T, namespace, secretName, ingressName, host string) {
-		tlsCrt, tlsKey, err := generateTLSKeyPair(host)
-		assert.NoError(t, err)
+		tlsCrt, tlsKey := generateTLSKeyPair(t, host)
 		client := fake.NewFakeClient(
 			&networkingv1.Ingress{
 				ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: ingressName},
@@ -69,6 +40,7 @@ func FuzzIngressController_GetCertificate_SuccessfulLookup(f *testing.F) {
 
 func FuzzIngressController_GetCertificate_NoIngressMatch(f *testing.F) {
 	f.Add("example.com")
+	f.Add("frantj.cc")
 	f.Fuzz(func(t *testing.T, host string) {
 		client := fake.NewFakeClient()
 		ctrl := &controller.IngressController{Client: client}
@@ -81,6 +53,7 @@ func FuzzIngressController_GetCertificate_NoIngressMatch(f *testing.F) {
 
 func FuzzIngressController_GetCertificate_SecretNotFound(f *testing.F) {
 	f.Add("kube-system", "test-tls", "test", "example.com")
+	f.Add("go-ingress", "frantjc-tls", "frantjc", "frantj.cc")
 	f.Fuzz(func(t *testing.T, namespace, secretName, ingressName, host string) {
 		client := fake.NewFakeClient(
 			&networkingv1.Ingress{
@@ -99,8 +72,9 @@ func FuzzIngressController_GetCertificate_SecretNotFound(f *testing.F) {
 	})
 }
 
-func FuzIngressController_GetCertificate_NoTLSConfigured(f *testing.F) {
-	f.Add("kube-system", "test-tls", "example.com")
+func FuzzIngressController_GetCertificate_NoTLSConfigured(f *testing.F) {
+	f.Add("kube-system", "test", "example.com")
+	f.Add("go-ingress", "frantjc", "frantj.cc")
 	f.Fuzz(func(t *testing.T, namespace, ingressName, host string) {
 		client := fake.NewFakeClient(
 			&networkingv1.Ingress{
